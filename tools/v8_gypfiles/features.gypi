@@ -224,6 +224,9 @@
     # Sets -DV8_DICT_PROPERTY_CONST_TRACKING
     'v8_dict_property_const_tracking%': 0,
 
+    # Allow for JS promise hooks (instead of just C++).
+    'v8_enable_javascript_promise_hooks%': 0,
+
     # Enable allocation folding globally (sets -dV8_ALLOCATION_FOLDING).
     # When it's disabled, the --turbo-allocation-folding runtime flag will be ignored.
     'v8_enable_allocation_folding%': 1,
@@ -395,6 +398,9 @@
       }],
       ['v8_dict_property_const_tracking==1', {
         'defines': ['V8_DICT_PROPERTY_CONST_TRACKING',],
+      }],
+      ['v8_enable_javascript_promise_hooks==1', {
+        'defines': ['V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS',],
       }],
       ['v8_enable_allocation_folding==1', {
         'defines': ['V8_ALLOCATION_FOLDING',],
