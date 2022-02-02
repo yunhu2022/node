@@ -126,6 +126,9 @@ class HeapObject : public Object {
   template <typename ObjectVisitor>
   inline void IterateFast(PtrComprCageBase cage_base, ObjectVisitor* v);
 
+  template <typename ObjectVisitor>
+  inline void IterateFast(Map map, int object_size, ObjectVisitor* v);
+
   // Iterates over all pointers contained in the object except the
   // first map pointer.  The object type is given in the first
   // parameter. This function does not access the map pointer in the
@@ -161,6 +164,7 @@ class HeapObject : public Object {
   inline ObjectSlot RawField(int byte_offset) const;
   inline MaybeObjectSlot RawMaybeWeakField(int byte_offset) const;
   inline CodeObjectSlot RawCodeField(int byte_offset) const;
+  inline ExternalPointer_t RawExternalPointerField(int byte_offset) const;
 
   DECL_CAST(HeapObject)
 

@@ -125,14 +125,6 @@ class V8_EXPORT EmbedderHeapTracer {
   void SetStackStart(void* stack_start);
 
   /**
-   * Called by the embedder to notify V8 of an empty execution stack.
-   */
-  V8_DEPRECATED(
-      "This call only optimized internal caches which V8 is able to figure out "
-      "on its own now.")
-  void NotifyEmptyEmbedderStack();
-
-  /**
    * Called by v8 to register internal fields of found wrappers.
    *
    * The embedder is expected to store them somewhere and trace reachable
@@ -210,7 +202,7 @@ class V8_EXPORT EmbedderHeapTracer {
    *
    * Should only be used in testing code.
    */
-  V8_DEPRECATE_SOON("Use Isolate::RequestGarbageCollectionForTesting instead")
+  V8_DEPRECATED("Use Isolate::RequestGarbageCollectionForTesting instead")
   void GarbageCollectionForTesting(EmbedderStackState stack_state);
 
   /*

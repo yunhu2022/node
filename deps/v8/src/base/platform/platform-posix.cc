@@ -237,10 +237,16 @@ bool OS::ArmUsingHardFloat() {
 #endif  // def __arm__
 #endif
 
-void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
+void PosixInitializeCommon(bool hard_abort, const char* const gc_fake_mmap) {
   g_hard_abort = hard_abort;
   g_gc_fake_mmap = gc_fake_mmap;
 }
+
+#if !V8_OS_FUCHSIA
+void OS::Initialize(bool hard_abort, const char* const gc_fake_mmap) {
+  PosixInitializeCommon(hard_abort, gc_fake_mmap);
+}
+#endif  // !V8_OS_FUCHSIA
 
 int OS::ActivationFrameAlignment() {
 #if V8_TARGET_ARCH_ARM
@@ -473,6 +479,8 @@ bool OS::SetPermissions(void* address, size_t size, MemoryPermission access) {
 
 // static
 bool OS::DiscardSystemPages(void* address, size_t size) {
+  // Roughly based on PartitionAlloc's DiscardSystemPagesInternal
+  // (base/allocator/partition_allocator/page_allocator_internals_posix.h)
   DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
   DCHECK_EQ(0, size % CommitPageSize());
 #if defined(V8_OS_MACOSX)
@@ -480,26 +488,24 @@ bool OS::DiscardSystemPages(void* address, size_t size) {
   // marks the pages with the reusable bit, which allows both Activity Monitor
   // and memory-infra to correctly track the pages.
   int ret = madvise(address, size, MADV_FREE_REUSABLE);
+  if (ret) {
+    // MADV_FREE_REUSABLE sometimes fails, so fall back to MADV_DONTNEED.
+    ret = madvise(address, size, MADV_DONTNEED);
+  }
 #elif defined(_AIX) || defined(V8_OS_SOLARIS)
   int ret = madvise(reinterpret_cast<caddr_t>(address), size, MADV_FREE);
-#else
-  int ret = madvise(address, size, MADV_FREE);
-#endif
   if (ret != 0 && errno == ENOSYS)
     return true;  // madvise is not available on all systems.
-  if (ret != 0 && errno == EINVAL) {
-// MADV_FREE only works on Linux 4.5+ . If request failed, retry with older
-// MADV_DONTNEED . Note that MADV_FREE being defined at compile time doesn't
-// imply runtime support.
-#if defined(_AIX) || defined(V8_OS_SOLARIS)
+  if (ret != 0 && errno == EINVAL)
     ret = madvise(reinterpret_cast<caddr_t>(address), size, MADV_DONTNEED);
 #else
-    ret = madvise(address, size, MADV_DONTNEED);
+  int ret = madvise(address, size, MADV_DONTNEED);
 #endif
-  }
   return ret == 0;
 }
 
+#if !defined(_AIX)
+// See AIX version for details.
 // static
 bool OS::DecommitPages(void* address, size_t size) {
   DCHECK_EQ(0, reinterpret_cast<uintptr_t>(address) % CommitPageSize());
@@ -514,6 +520,7 @@ bool OS::DecommitPages(void* address, size_t size) {
                    MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   return ptr == address;
 }
+#endif  // !defined(_AIX)
 
 // static
 bool OS::CanReserveAddressSpace() { return true; }
@@ -885,6 +892,12 @@ bool AddressSpaceReservation::Allocate(void* address, size_t size,
                                        OS::MemoryPermission access) {
   // The region is already mmap'ed, so it just has to be made accessible now.
   DCHECK(Contains(address, size));
+  if (access == OS::MemoryPermission::kNoAccess) {
+    // Nothing to do. We don't want to call SetPermissions with kNoAccess here
+    // as that will for example mark the pages as discardable, which is
+    // probably not desired here.
+    return true;
+  }
   return OS::SetPermissions(address, size, access);
 }
 

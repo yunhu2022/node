@@ -1251,7 +1251,6 @@ void LiftoffAssembler::LoadCallerFrameSlot(LiftoffRegister dst,
     case kRef:
     case kRtt:
     case kOptRef:
-    case kRttWithDepth:
     case kI64: {
       LoadU64(dst.gp(), MemOperand(fp, offset));
       break;
@@ -1330,7 +1329,6 @@ void LiftoffAssembler::LoadReturnStackSlot(LiftoffRegister dst, int offset,
     case kRef:
     case kRtt:
     case kOptRef:
-    case kRttWithDepth:
     case kI64: {
       LoadU64(dst.gp(), MemOperand(sp, offset));
       break;
@@ -1432,7 +1430,6 @@ void LiftoffAssembler::Spill(int offset, LiftoffRegister reg, ValueKind kind) {
     case kOptRef:
     case kRef:
     case kRtt:
-    case kRttWithDepth:
       StoreU64(reg.gp(), liftoff::GetStackSlot(offset));
       break;
     case kF32:
@@ -1483,7 +1480,6 @@ void LiftoffAssembler::Fill(LiftoffRegister reg, int offset, ValueKind kind) {
     case kRef:
     case kOptRef:
     case kRtt:
-    case kRttWithDepth:
       LoadU64(reg.gp(), liftoff::GetStackSlot(offset));
       break;
     case kF32:
@@ -1565,7 +1561,7 @@ void LiftoffAssembler::FillStackSlotsWithZero(int start, int size) {
   V(i32_popcnt, Popcnt32, Register, Register, , , USE, true, bool)             \
   V(i64_popcnt, Popcnt64, LiftoffRegister, LiftoffRegister, LFR_TO_REG,        \
     LFR_TO_REG, USE, true, bool)                                               \
-  V(u32_to_intptr, LoadU32, Register, Register, , , USE, , void)               \
+  V(u32_to_uintptr, LoadU32, Register, Register, , , USE, , void)              \
   V(i32_signextend_i8, lbr, Register, Register, , , USE, , void)               \
   V(i32_signextend_i16, lhr, Register, Register, , , USE, , void)              \
   V(i64_signextend_i8, lgbr, LiftoffRegister, LiftoffRegister, LFR_TO_REG,     \
@@ -2142,7 +2138,6 @@ void LiftoffAssembler::emit_cond_jump(LiftoffCondition liftoff_cond,
       case kRef:
       case kOptRef:
       case kRtt:
-      case kRttWithDepth:
         DCHECK(liftoff_cond == kEqual || liftoff_cond == kUnequal);
         V8_FALLTHROUGH;
       case kI64:
@@ -2276,6 +2271,8 @@ void LiftoffAssembler::emit_smi_check(Register obj, Label* target,
   V(f64x2_ne, F64x2Ne, fp)      \
   V(f64x2_lt, F64x2Lt, fp)      \
   V(f64x2_le, F64x2Le, fp)      \
+  V(f64x2_pmin, F64x2Pmin, fp)  \
+  V(f64x2_pmax, F64x2Pmax, fp)  \
   V(f32x4_add, F32x4Add, fp)    \
   V(f32x4_sub, F32x4Sub, fp)    \
   V(f32x4_mul, F32x4Mul, fp)    \
@@ -2286,6 +2283,8 @@ void LiftoffAssembler::emit_smi_check(Register obj, Label* target,
   V(f32x4_ne, F32x4Ne, fp)      \
   V(f32x4_lt, F32x4Lt, fp)      \
   V(f32x4_le, F32x4Le, fp)      \
+  V(f32x4_pmin, F32x4Pmin, fp)  \
+  V(f32x4_pmax, F32x4Pmax, fp)  \
   V(i64x2_add, I64x2Add, fp)    \
   V(i64x2_sub, I64x2Sub, fp)    \
   V(i64x2_mul, I64x2Mul, fp)    \
@@ -2342,7 +2341,11 @@ void LiftoffAssembler::emit_smi_check(Register obj, Label* target,
   V(i8x16_max_u, I8x16MaxU, fp) \
   V(i8x16_shl, I8x16Shl, gp)    \
   V(i8x16_shr_s, I8x16ShrS, gp) \
-  V(i8x16_shr_u, I8x16ShrU, gp)
+  V(i8x16_shr_u, I8x16ShrU, gp) \
+  V(s128_and, S128And, fp)      \
+  V(s128_or, S128Or, fp)        \
+  V(s128_xor, S128Xor, fp)      \
+  V(s128_and_not, S128AndNot, fp)
 
 #define EMIT_SIMD_BINOP_RR(name, op, stype)                                    \
   void LiftoffAssembler::emit_##name(LiftoffRegister dst, LiftoffRegister lhs, \
@@ -2376,18 +2379,54 @@ SIMD_BINOP_RI_LIST(EMIT_SIMD_BINOP_RI)
 #undef EMIT_SIMD_BINOP_RI
 #undef SIMD_BINOP_RI_LIST
 
-#define SIMD_UNOP_LIST(V)            \
-  V(f64x2_splat, F64x2Splat, fp, fp) \
-  V(f32x4_splat, F32x4Splat, fp, fp) \
-  V(i64x2_splat, I64x2Splat, fp, gp) \
-  V(i32x4_splat, I32x4Splat, fp, gp) \
-  V(i16x8_splat, I16x8Splat, fp, gp) \
-  V(i8x16_splat, I8x16Splat, fp, gp)
+#define SIMD_UNOP_LIST(V)                                              \
+  V(f64x2_splat, F64x2Splat, fp, fp, , void)                           \
+  V(f64x2_abs, F64x2Abs, fp, fp, , void)                               \
+  V(f64x2_neg, F64x2Neg, fp, fp, , void)                               \
+  V(f64x2_sqrt, F64x2Sqrt, fp, fp, , void)                             \
+  V(f64x2_ceil, F64x2Ceil, fp, fp, true, bool)                         \
+  V(f64x2_floor, F64x2Floor, fp, fp, true, bool)                       \
+  V(f64x2_trunc, F64x2Trunc, fp, fp, true, bool)                       \
+  V(f64x2_nearest_int, F64x2NearestInt, fp, fp, true, bool)            \
+  V(f32x4_abs, F32x4Abs, fp, fp, , void)                               \
+  V(f32x4_splat, F32x4Splat, fp, fp, , void)                           \
+  V(f32x4_neg, F32x4Neg, fp, fp, , void)                               \
+  V(f32x4_sqrt, F32x4Sqrt, fp, fp, , void)                             \
+  V(f32x4_ceil, F32x4Ceil, fp, fp, true, bool)                         \
+  V(f32x4_floor, F32x4Floor, fp, fp, true, bool)                       \
+  V(f32x4_trunc, F32x4Trunc, fp, fp, true, bool)                       \
+  V(f32x4_nearest_int, F32x4NearestInt, fp, fp, true, bool)            \
+  V(i64x2_abs, I64x2Abs, fp, fp, , void)                               \
+  V(i64x2_splat, I64x2Splat, fp, gp, , void)                           \
+  V(i64x2_neg, I64x2Neg, fp, fp, , void)                               \
+  V(i64x2_sconvert_i32x4_low, I64x2SConvertI32x4Low, fp, fp, , void)   \
+  V(i64x2_sconvert_i32x4_high, I64x2SConvertI32x4High, fp, fp, , void) \
+  V(i64x2_uconvert_i32x4_low, I64x2UConvertI32x4Low, fp, fp, , void)   \
+  V(i64x2_uconvert_i32x4_high, I64x2UConvertI32x4High, fp, fp, , void) \
+  V(i32x4_abs, I32x4Abs, fp, fp, , void)                               \
+  V(i32x4_neg, I32x4Neg, fp, fp, , void)                               \
+  V(i32x4_splat, I32x4Splat, fp, gp, , void)                           \
+  V(i32x4_sconvert_i16x8_low, I32x4SConvertI16x8Low, fp, fp, , void)   \
+  V(i32x4_sconvert_i16x8_high, I32x4SConvertI16x8High, fp, fp, , void) \
+  V(i32x4_uconvert_i16x8_low, I32x4UConvertI16x8Low, fp, fp, , void)   \
+  V(i32x4_uconvert_i16x8_high, I32x4UConvertI16x8High, fp, fp, , void) \
+  V(i16x8_abs, I16x8Abs, fp, fp, , void)                               \
+  V(i16x8_neg, I16x8Neg, fp, fp, , void)                               \
+  V(i16x8_splat, I16x8Splat, fp, gp, , void)                           \
+  V(i16x8_sconvert_i8x16_low, I16x8SConvertI8x16Low, fp, fp, , void)   \
+  V(i16x8_sconvert_i8x16_high, I16x8SConvertI8x16High, fp, fp, , void) \
+  V(i16x8_uconvert_i8x16_low, I16x8UConvertI8x16Low, fp, fp, , void)   \
+  V(i16x8_uconvert_i8x16_high, I16x8UConvertI8x16High, fp, fp, , void) \
+  V(i8x16_abs, I8x16Abs, fp, fp, , void)                               \
+  V(i8x16_neg, I8x16Neg, fp, fp, , void)                               \
+  V(i8x16_splat, I8x16Splat, fp, gp, , void)                           \
+  V(s128_not, S128Not, fp, fp, , void)
 
-#define EMIT_SIMD_UNOP(name, op, dtype, stype)              \
-  void LiftoffAssembler::emit_##name(LiftoffRegister dst,   \
-                                     LiftoffRegister src) { \
-    op(dst.dtype(), src.stype());                           \
+#define EMIT_SIMD_UNOP(name, op, dtype, stype, return_val, return_type) \
+  return_type LiftoffAssembler::emit_##name(LiftoffRegister dst,        \
+                                            LiftoffRegister src) {      \
+    op(dst.dtype(), src.stype());                                       \
+    return return_val;                                                  \
   }
 SIMD_UNOP_LIST(EMIT_SIMD_UNOP)
 #undef EMIT_SIMD_UNOP
@@ -2430,6 +2469,44 @@ SIMD_REPLACE_LANE_LIST(EMIT_SIMD_REPLACE_LANE)
 #undef EMIT_SIMD_REPLACE_LANE
 #undef SIMD_REPLACE_LANE_LIST
 
+#define SIMD_EXT_MUL_LIST(V)                          \
+  V(i64x2_extmul_low_i32x4_s, I64x2ExtMulLowI32x4S)   \
+  V(i64x2_extmul_low_i32x4_u, I64x2ExtMulLowI32x4U)   \
+  V(i64x2_extmul_high_i32x4_s, I64x2ExtMulHighI32x4S) \
+  V(i64x2_extmul_high_i32x4_u, I64x2ExtMulHighI32x4U) \
+  V(i32x4_extmul_low_i16x8_s, I32x4ExtMulLowI16x8S)   \
+  V(i32x4_extmul_low_i16x8_u, I32x4ExtMulLowI16x8U)   \
+  V(i32x4_extmul_high_i16x8_s, I32x4ExtMulHighI16x8S) \
+  V(i32x4_extmul_high_i16x8_u, I32x4ExtMulHighI16x8U) \
+  V(i16x8_extmul_low_i8x16_s, I16x8ExtMulLowI8x16S)   \
+  V(i16x8_extmul_low_i8x16_u, I16x8ExtMulLowI8x16U)   \
+  V(i16x8_extmul_high_i8x16_s, I16x8ExtMulHighI8x16S) \
+  V(i16x8_extmul_high_i8x16_u, I16x8ExtMulHighI8x16U)
+
+#define EMIT_SIMD_EXT_MUL(name, op)                                      \
+  void LiftoffAssembler::emit_##name(                                    \
+      LiftoffRegister dst, LiftoffRegister src1, LiftoffRegister src2) { \
+    op(dst.fp(), src1.fp(), src2.fp(), kScratchDoubleReg);               \
+  }
+SIMD_EXT_MUL_LIST(EMIT_SIMD_EXT_MUL)
+#undef EMIT_SIMD_EXT_MUL
+#undef SIMD_EXT_MUL_LIST
+
+#define SIMD_ALL_TRUE_LIST(V)    \
+  V(i64x2_alltrue, I64x2AllTrue) \
+  V(i32x4_alltrue, I32x4AllTrue) \
+  V(i16x8_alltrue, I16x8AllTrue) \
+  V(i8x16_alltrue, I8x16AllTrue)
+
+#define EMIT_SIMD_ALL_TRUE(name, op)                        \
+  void LiftoffAssembler::emit_##name(LiftoffRegister dst,   \
+                                     LiftoffRegister src) { \
+    op(dst.gp(), src.fp(), r0, kScratchDoubleReg);          \
+  }
+SIMD_ALL_TRUE_LIST(EMIT_SIMD_ALL_TRUE)
+#undef EMIT_SIMD_ALL_TRUE
+#undef SIMD_ALL_TRUE_LIST
+
 void LiftoffAssembler::LoadTransform(LiftoffRegister dst, Register src_addr,
                                      Register offset_reg, uintptr_t offset_imm,
                                      LoadType type,
@@ -2458,63 +2535,14 @@ void LiftoffAssembler::emit_i8x16_swizzle(LiftoffRegister dst,
   bailout(kUnsupportedArchitecture, "emit_i8x16_swizzle");
 }
 
-void LiftoffAssembler::emit_f64x2_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f64x2_abs");
-}
-
-void LiftoffAssembler::emit_f64x2_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f64x2neg");
-}
-
-void LiftoffAssembler::emit_f64x2_sqrt(LiftoffRegister dst,
-                                       LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f64x2sqrt");
-}
-
-bool LiftoffAssembler::emit_f64x2_ceil(LiftoffRegister dst,
-                                       LiftoffRegister src) {
-  bailout(kSimd, "f64x2.ceil");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f64x2_floor(LiftoffRegister dst,
-                                        LiftoffRegister src) {
-  bailout(kSimd, "f64x2.floor");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f64x2_trunc(LiftoffRegister dst,
-                                        LiftoffRegister src) {
-  bailout(kSimd, "f64x2.trunc");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f64x2_nearest_int(LiftoffRegister dst,
-                                              LiftoffRegister src) {
-  bailout(kSimd, "f64x2.nearest_int");
-  return true;
-}
-
-void LiftoffAssembler::emit_f64x2_pmin(LiftoffRegister dst, LiftoffRegister lhs,
-                                       LiftoffRegister rhs) {
-  bailout(kSimd, "pmin unimplemented");
-}
-
-void LiftoffAssembler::emit_f64x2_pmax(LiftoffRegister dst, LiftoffRegister lhs,
-                                       LiftoffRegister rhs) {
-  bailout(kSimd, "pmax unimplemented");
-}
-
 void LiftoffAssembler::emit_f64x2_convert_low_i32x4_s(LiftoffRegister dst,
                                                       LiftoffRegister src) {
-  bailout(kSimd, "f64x2.convert_low_i32x4_s");
+  F64x2ConvertLowI32x4S(dst.fp(), src.fp());
 }
 
 void LiftoffAssembler::emit_f64x2_convert_low_i32x4_u(LiftoffRegister dst,
                                                       LiftoffRegister src) {
-  bailout(kSimd, "f64x2.convert_low_i32x4_u");
+  F64x2ConvertLowI32x4U(dst.fp(), src.fp());
 }
 
 void LiftoffAssembler::emit_f64x2_promote_low_f32x4(LiftoffRegister dst,
@@ -2522,127 +2550,14 @@ void LiftoffAssembler::emit_f64x2_promote_low_f32x4(LiftoffRegister dst,
   bailout(kSimd, "f64x2.promote_low_f32x4");
 }
 
-void LiftoffAssembler::emit_f32x4_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f32x4_abs");
-}
-
-void LiftoffAssembler::emit_f32x4_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f32x4neg");
-}
-
-void LiftoffAssembler::emit_f32x4_sqrt(LiftoffRegister dst,
-                                       LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_f32x4sqrt");
-}
-
-bool LiftoffAssembler::emit_f32x4_ceil(LiftoffRegister dst,
-                                       LiftoffRegister src) {
-  bailout(kSimd, "f32x4.ceil");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f32x4_floor(LiftoffRegister dst,
-                                        LiftoffRegister src) {
-  bailout(kSimd, "f32x4.floor");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f32x4_trunc(LiftoffRegister dst,
-                                        LiftoffRegister src) {
-  bailout(kSimd, "f32x4.trunc");
-  return true;
-}
-
-bool LiftoffAssembler::emit_f32x4_nearest_int(LiftoffRegister dst,
-                                              LiftoffRegister src) {
-  bailout(kSimd, "f32x4.nearest_int");
-  return true;
-}
-
-void LiftoffAssembler::emit_f32x4_pmin(LiftoffRegister dst, LiftoffRegister lhs,
-                                       LiftoffRegister rhs) {
-  bailout(kSimd, "pmin unimplemented");
-}
-
-void LiftoffAssembler::emit_f32x4_pmax(LiftoffRegister dst, LiftoffRegister lhs,
-                                       LiftoffRegister rhs) {
-  bailout(kSimd, "pmax unimplemented");
-}
-
-void LiftoffAssembler::emit_i64x2_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i64x2neg");
-}
-
-void LiftoffAssembler::emit_i64x2_alltrue(LiftoffRegister dst,
-                                          LiftoffRegister src) {
-  bailout(kSimd, "i64x2_alltrue");
-}
-
-void LiftoffAssembler::emit_i64x2_extmul_low_i32x4_s(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i64x2_extmul_low_i32x4_s unsupported");
-}
-
-void LiftoffAssembler::emit_i64x2_extmul_low_i32x4_u(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i64x2_extmul_low_i32x4_u unsupported");
-}
-
-void LiftoffAssembler::emit_i64x2_extmul_high_i32x4_s(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i64x2_extmul_high_i32x4_s unsupported");
-}
-
 void LiftoffAssembler::emit_i64x2_bitmask(LiftoffRegister dst,
                                           LiftoffRegister src) {
-  bailout(kSimd, "i64x2_bitmask");
-}
-
-void LiftoffAssembler::emit_i64x2_sconvert_i32x4_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kSimd, "i64x2_sconvert_i32x4_low");
-}
-
-void LiftoffAssembler::emit_i64x2_sconvert_i32x4_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kSimd, "i64x2_sconvert_i32x4_high");
-}
-
-void LiftoffAssembler::emit_i64x2_uconvert_i32x4_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kSimd, "i64x2_uconvert_i32x4_low");
-}
-
-void LiftoffAssembler::emit_i64x2_uconvert_i32x4_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kSimd, "i64x2_uconvert_i32x4_high");
-}
-
-void LiftoffAssembler::emit_i64x2_extmul_high_i32x4_u(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i64x2_extmul_high_i32x4_u unsupported");
-}
-
-void LiftoffAssembler::emit_i32x4_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4neg");
-}
-
-void LiftoffAssembler::emit_i32x4_alltrue(LiftoffRegister dst,
-                                          LiftoffRegister src) {
-  bailout(kSimd, "i32x4_alltrue");
+  I64x2BitMask(dst.gp(), src.fp(), r0, kScratchDoubleReg);
 }
 
 void LiftoffAssembler::emit_i32x4_bitmask(LiftoffRegister dst,
                                           LiftoffRegister src) {
-  bailout(kSimd, "i32x4_bitmask");
+  I32x4BitMask(dst.gp(), src.fp(), r0, kScratchDoubleReg);
 }
 
 void LiftoffAssembler::emit_i32x4_dot_i16x8_s(LiftoffRegister dst,
@@ -2661,43 +2576,9 @@ void LiftoffAssembler::emit_i32x4_extadd_pairwise_i16x8_u(LiftoffRegister dst,
   bailout(kSimd, "i32x4.extadd_pairwise_i16x8_u");
 }
 
-void LiftoffAssembler::emit_i32x4_extmul_low_i16x8_s(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i32x4_extmul_low_i16x8_s unsupported");
-}
-
-void LiftoffAssembler::emit_i32x4_extmul_low_i16x8_u(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i32x4_extmul_low_i16x8_u unsupported");
-}
-
-void LiftoffAssembler::emit_i32x4_extmul_high_i16x8_s(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i32x4_extmul_high_i16x8_s unsupported");
-}
-
-void LiftoffAssembler::emit_i32x4_extmul_high_i16x8_u(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i32x4_extmul_high_i16x8_u unsupported");
-}
-
-void LiftoffAssembler::emit_i16x8_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8neg");
-}
-
-void LiftoffAssembler::emit_i16x8_alltrue(LiftoffRegister dst,
-                                          LiftoffRegister src) {
-  bailout(kSimd, "i16x8_alltrue");
-}
-
 void LiftoffAssembler::emit_i16x8_bitmask(LiftoffRegister dst,
                                           LiftoffRegister src) {
-  bailout(kSimd, "i16x8_bitmask");
+  I16x8BitMask(dst.gp(), src.fp(), r0, kScratchDoubleReg);
 }
 
 void LiftoffAssembler::emit_i16x8_add_sat_s(LiftoffRegister dst,
@@ -2734,34 +2615,10 @@ void LiftoffAssembler::emit_i16x8_extadd_pairwise_i8x16_u(LiftoffRegister dst,
   bailout(kSimd, "i16x8.extadd_pairwise_i8x16_u");
 }
 
-void LiftoffAssembler::emit_i16x8_extmul_low_i8x16_s(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i16x8.extmul_low_i8x16_s unsupported");
-}
-
-void LiftoffAssembler::emit_i16x8_extmul_low_i8x16_u(LiftoffRegister dst,
-                                                     LiftoffRegister src1,
-                                                     LiftoffRegister src2) {
-  bailout(kSimd, "i16x8.extmul_low_i8x16_u unsupported");
-}
-
-void LiftoffAssembler::emit_i16x8_extmul_high_i8x16_s(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i16x8.extmul_high_i8x16_s unsupported");
-}
-
 void LiftoffAssembler::emit_i16x8_q15mulr_sat_s(LiftoffRegister dst,
                                                 LiftoffRegister src1,
                                                 LiftoffRegister src2) {
   bailout(kSimd, "i16x8_q15mulr_sat_s");
-}
-
-void LiftoffAssembler::emit_i16x8_extmul_high_i8x16_u(LiftoffRegister dst,
-                                                      LiftoffRegister src1,
-                                                      LiftoffRegister src2) {
-  bailout(kSimd, "i16x8_extmul_high_i8x16_u unsupported");
 }
 
 void LiftoffAssembler::emit_i8x16_shuffle(LiftoffRegister dst,
@@ -2774,27 +2631,17 @@ void LiftoffAssembler::emit_i8x16_shuffle(LiftoffRegister dst,
 
 void LiftoffAssembler::emit_i8x16_popcnt(LiftoffRegister dst,
                                          LiftoffRegister src) {
-  bailout(kSimd, "i8x16.popcnt");
-}
-
-void LiftoffAssembler::emit_i8x16_neg(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i8x16neg");
+  I8x16Popcnt(dst.fp(), src.fp());
 }
 
 void LiftoffAssembler::emit_v128_anytrue(LiftoffRegister dst,
                                          LiftoffRegister src) {
-  bailout(kSimd, "v8x16_anytrue");
-}
-
-void LiftoffAssembler::emit_i8x16_alltrue(LiftoffRegister dst,
-                                          LiftoffRegister src) {
-  bailout(kSimd, "i8x16_alltrue");
+  V128AnyTrue(dst.gp(), src.fp(), r0);
 }
 
 void LiftoffAssembler::emit_i8x16_bitmask(LiftoffRegister dst,
                                           LiftoffRegister src) {
-  bailout(kSimd, "i8x16_bitmask");
+  I8x16BitMask(dst.gp(), src.fp(), r0, ip, kScratchDoubleReg);
 }
 
 void LiftoffAssembler::emit_i8x16_add_sat_s(LiftoffRegister dst,
@@ -2824,25 +2671,6 @@ void LiftoffAssembler::emit_i8x16_add_sat_u(LiftoffRegister dst,
 void LiftoffAssembler::emit_s128_const(LiftoffRegister dst,
                                        const uint8_t imms[16]) {
   bailout(kUnsupportedArchitecture, "emit_s128_const");
-}
-
-void LiftoffAssembler::emit_s128_not(LiftoffRegister dst, LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_s128_not");
-}
-
-void LiftoffAssembler::emit_s128_and(LiftoffRegister dst, LiftoffRegister lhs,
-                                     LiftoffRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_s128_and");
-}
-
-void LiftoffAssembler::emit_s128_or(LiftoffRegister dst, LiftoffRegister lhs,
-                                    LiftoffRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_s128_or");
-}
-
-void LiftoffAssembler::emit_s128_xor(LiftoffRegister dst, LiftoffRegister lhs,
-                                     LiftoffRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_s128_xor");
 }
 
 void LiftoffAssembler::emit_s128_select(LiftoffRegister dst,
@@ -2901,46 +2729,6 @@ void LiftoffAssembler::emit_i16x8_uconvert_i32x4(LiftoffRegister dst,
   bailout(kUnsupportedArchitecture, "emit_i16x8_uconvert_i32x4");
 }
 
-void LiftoffAssembler::emit_i16x8_sconvert_i8x16_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8_sconvert_i8x16_low");
-}
-
-void LiftoffAssembler::emit_i16x8_sconvert_i8x16_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8_sconvert_i8x16_high");
-}
-
-void LiftoffAssembler::emit_i16x8_uconvert_i8x16_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8_uconvert_i8x16_low");
-}
-
-void LiftoffAssembler::emit_i16x8_uconvert_i8x16_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8_uconvert_i8x16_high");
-}
-
-void LiftoffAssembler::emit_i32x4_sconvert_i16x8_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4_sconvert_i16x8_low");
-}
-
-void LiftoffAssembler::emit_i32x4_sconvert_i16x8_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4_sconvert_i16x8_high");
-}
-
-void LiftoffAssembler::emit_i32x4_uconvert_i16x8_low(LiftoffRegister dst,
-                                                     LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4_uconvert_i16x8_low");
-}
-
-void LiftoffAssembler::emit_i32x4_uconvert_i16x8_high(LiftoffRegister dst,
-                                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4_uconvert_i16x8_high");
-}
-
 void LiftoffAssembler::emit_i32x4_trunc_sat_f64x2_s_zero(LiftoffRegister dst,
                                                          LiftoffRegister src) {
   bailout(kSimd, "i32x4.trunc_sat_f64x2_s_zero");
@@ -2949,12 +2737,6 @@ void LiftoffAssembler::emit_i32x4_trunc_sat_f64x2_s_zero(LiftoffRegister dst,
 void LiftoffAssembler::emit_i32x4_trunc_sat_f64x2_u_zero(LiftoffRegister dst,
                                                          LiftoffRegister src) {
   bailout(kSimd, "i32x4.trunc_sat_f64x2_u_zero");
-}
-
-void LiftoffAssembler::emit_s128_and_not(LiftoffRegister dst,
-                                         LiftoffRegister lhs,
-                                         LiftoffRegister rhs) {
-  bailout(kUnsupportedArchitecture, "emit_s128_and_not");
 }
 
 void LiftoffAssembler::emit_i8x16_rounding_average_u(LiftoffRegister dst,
@@ -2967,26 +2749,6 @@ void LiftoffAssembler::emit_i16x8_rounding_average_u(LiftoffRegister dst,
                                                      LiftoffRegister lhs,
                                                      LiftoffRegister rhs) {
   bailout(kUnsupportedArchitecture, "emit_i16x8_rounding_average_u");
-}
-
-void LiftoffAssembler::emit_i8x16_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i8x16_abs");
-}
-
-void LiftoffAssembler::emit_i16x8_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i16x8_abs");
-}
-
-void LiftoffAssembler::emit_i32x4_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kUnsupportedArchitecture, "emit_i32x4_abs");
-}
-
-void LiftoffAssembler::emit_i64x2_abs(LiftoffRegister dst,
-                                      LiftoffRegister src) {
-  bailout(kSimd, "i64x2.abs");
 }
 
 void LiftoffAssembler::StackCheck(Label* ool_code, Register limit_address) {
@@ -3110,7 +2872,6 @@ void LiftoffAssembler::CallC(const ValueKindSig* sig,
       case kOptRef:
       case kRef:
       case kRtt:
-      case kRttWithDepth:
         LoadU64(result_reg->gp(), MemOperand(sp));
         break;
       case kF32:
@@ -3216,7 +2977,6 @@ void LiftoffStackSlots::Construct(int param_slots) {
           case kRef:
           case kOptRef:
           case kRtt:
-          case kRttWithDepth:
           case kI64: {
             asm_->AllocateStackSpace(stack_decrement - kSystemPointerSize);
             UseScratchRegisterScope temps(asm_);
@@ -3264,7 +3024,6 @@ void LiftoffStackSlots::Construct(int param_slots) {
           case kRef:
           case kOptRef:
           case kRtt:
-          case kRttWithDepth:
             asm_->push(src.reg().gp());
             break;
           case kF32:

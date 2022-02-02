@@ -1105,6 +1105,61 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
                         Register src2, uint8_t imm_lane_idx);
   void I8x16ReplaceLane(Simd128Register dst, Simd128Register src1,
                         Register src2, uint8_t imm_lane_idx);
+  void I64x2BitMask(Register dst, Simd128Register src, Register scratch1,
+                    Simd128Register scratch2);
+  void I32x4BitMask(Register dst, Simd128Register src, Register scratch1,
+                    Simd128Register scratch2);
+  void I16x8BitMask(Register dst, Simd128Register src, Register scratch1,
+                    Simd128Register scratch2);
+  void I8x16BitMask(Register dst, Simd128Register src, Register scratch1,
+                    Register scratch2, Simd128Register scratch3);
+  void V128AnyTrue(Register dst, Simd128Register src, Register scratch);
+
+#define SIMD_UNOP_LIST(V)   \
+  V(F64x2Abs)               \
+  V(F64x2Neg)               \
+  V(F64x2Sqrt)              \
+  V(F64x2Ceil)              \
+  V(F64x2Floor)             \
+  V(F64x2Trunc)             \
+  V(F64x2NearestInt)        \
+  V(F64x2ConvertLowI32x4S)  \
+  V(F64x2ConvertLowI32x4U)  \
+  V(F32x4Abs)               \
+  V(F32x4Neg)               \
+  V(F32x4Sqrt)              \
+  V(F32x4Ceil)              \
+  V(F32x4Floor)             \
+  V(F32x4Trunc)             \
+  V(F32x4NearestInt)        \
+  V(I64x2Abs)               \
+  V(I64x2SConvertI32x4Low)  \
+  V(I64x2SConvertI32x4High) \
+  V(I64x2UConvertI32x4Low)  \
+  V(I64x2UConvertI32x4High) \
+  V(I64x2Neg)               \
+  V(I32x4Abs)               \
+  V(I32x4Neg)               \
+  V(I32x4SConvertI16x8Low)  \
+  V(I32x4SConvertI16x8High) \
+  V(I32x4UConvertI16x8Low)  \
+  V(I32x4UConvertI16x8High) \
+  V(I16x8Abs)               \
+  V(I16x8Neg)               \
+  V(I16x8SConvertI8x16Low)  \
+  V(I16x8SConvertI8x16High) \
+  V(I16x8UConvertI8x16Low)  \
+  V(I16x8UConvertI8x16High) \
+  V(I8x16Abs)               \
+  V(I8x16Neg)               \
+  V(I8x16Popcnt)            \
+  V(S128Not)
+
+#define PROTOTYPE_SIMD_UNOP(name) \
+  void name(Simd128Register dst, Simd128Register src);
+  SIMD_UNOP_LIST(PROTOTYPE_SIMD_UNOP)
+#undef PROTOTYPE_SIMD_UNOP
+#undef SIMD_UNOP_LIST
 
 #define SIMD_BINOP_LIST(V)      \
   V(F64x2Add, Simd128Register)  \
@@ -1117,6 +1172,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   V(F64x2Ne, Simd128Register)   \
   V(F64x2Lt, Simd128Register)   \
   V(F64x2Le, Simd128Register)   \
+  V(F64x2Pmin, Simd128Register) \
+  V(F64x2Pmax, Simd128Register) \
   V(F32x4Add, Simd128Register)  \
   V(F32x4Sub, Simd128Register)  \
   V(F32x4Mul, Simd128Register)  \
@@ -1127,6 +1184,8 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   V(F32x4Ne, Simd128Register)   \
   V(F32x4Lt, Simd128Register)   \
   V(F32x4Le, Simd128Register)   \
+  V(F32x4Pmin, Simd128Register) \
+  V(F32x4Pmax, Simd128Register) \
   V(I64x2Add, Simd128Register)  \
   V(I64x2Sub, Simd128Register)  \
   V(I64x2Mul, Simd128Register)  \
@@ -1195,13 +1254,51 @@ class V8_EXPORT_PRIVATE TurboAssembler : public TurboAssemblerBase {
   V(I8x16ShrU, Register)        \
   V(I8x16Shl, const Operand&)   \
   V(I8x16ShrS, const Operand&)  \
-  V(I8x16ShrU, const Operand&)
+  V(I8x16ShrU, const Operand&)  \
+  V(S128And, Simd128Register)   \
+  V(S128Or, Simd128Register)    \
+  V(S128Xor, Simd128Register)   \
+  V(S128AndNot, Simd128Register)
 
 #define PROTOTYPE_SIMD_BINOP(name, stype) \
   void name(Simd128Register dst, Simd128Register src1, stype src2);
   SIMD_BINOP_LIST(PROTOTYPE_SIMD_BINOP)
 #undef PROTOTYPE_SIMD_BINOP
 #undef SIMD_BINOP_LIST
+
+#define SIMD_EXT_MUL_LIST(V) \
+  V(I64x2ExtMulLowI32x4S)    \
+  V(I64x2ExtMulHighI32x4S)   \
+  V(I64x2ExtMulLowI32x4U)    \
+  V(I64x2ExtMulHighI32x4U)   \
+  V(I32x4ExtMulLowI16x8S)    \
+  V(I32x4ExtMulHighI16x8S)   \
+  V(I32x4ExtMulLowI16x8U)    \
+  V(I32x4ExtMulHighI16x8U)   \
+  V(I16x8ExtMulLowI8x16S)    \
+  V(I16x8ExtMulHighI8x16S)   \
+  V(I16x8ExtMulLowI8x16U)    \
+  V(I16x8ExtMulHighI8x16U)
+
+#define PROTOTYPE_SIMD_EXT_MUL(name)                                         \
+  void name(Simd128Register dst, Simd128Register src1, Simd128Register src2, \
+            Simd128Register scratch);
+  SIMD_EXT_MUL_LIST(PROTOTYPE_SIMD_EXT_MUL)
+#undef PROTOTYPE_SIMD_EXT_MUL
+#undef SIMD_EXT_MUL_LIST
+
+#define SIMD_ALL_TRUE_LIST(V) \
+  V(I64x2AllTrue)             \
+  V(I32x4AllTrue)             \
+  V(I16x8AllTrue)             \
+  V(I8x16AllTrue)
+
+#define PROTOTYPE_SIMD_ALL_TRUE(name)                             \
+  void name(Register dst, Simd128Register src, Register scratch1, \
+            Simd128Register scratch2);
+  SIMD_ALL_TRUE_LIST(PROTOTYPE_SIMD_ALL_TRUE)
+#undef PROTOTYPE_SIMD_ALL_TRUE
+#undef SIMD_ALL_TRUE_LIST
 
   // ---------------------------------------------------------------------------
   // Pointer compression Support

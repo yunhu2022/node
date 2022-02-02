@@ -48,7 +48,7 @@ CodeKinds JSFunction::GetAvailableCodeKinds() const {
   // Check the optimized code cache.
   if (has_feedback_vector() && feedback_vector().has_optimized_code() &&
       !feedback_vector().optimized_code().marked_for_deoptimization()) {
-    Code code = feedback_vector().optimized_code();
+    CodeT code = feedback_vector().optimized_code();
     DCHECK(CodeKindIsOptimizedJSFunction(code.kind()));
     result |= CodeKindToCodeKindFlag(code.kind());
   }
@@ -87,9 +87,6 @@ V8_WARN_UNUSED_RESULT bool HighestTierOf(CodeKinds kinds,
   if ((kinds & CodeKindFlag::TURBOFAN) != 0) {
     *highest_tier = CodeKind::TURBOFAN;
     return true;
-  } else if ((kinds & CodeKindFlag::TURBOPROP) != 0) {
-    *highest_tier = CodeKind::TURBOPROP;
-    return true;
   } else if ((kinds & CodeKindFlag::BASELINE) != 0) {
     *highest_tier = CodeKind::BASELINE;
     return true;
@@ -120,7 +117,6 @@ base::Optional<CodeKind> JSFunction::GetActiveTier() const {
 #ifdef DEBUG
   CHECK(highest_tier == CodeKind::TURBOFAN ||
         highest_tier == CodeKind::BASELINE ||
-        highest_tier == CodeKind::TURBOPROP ||
         highest_tier == CodeKind::INTERPRETED_FUNCTION);
 
   if (highest_tier == CodeKind::INTERPRETED_FUNCTION) {
@@ -147,24 +143,7 @@ bool JSFunction::ActiveTierIsBaseline() const {
   return GetActiveTier() == CodeKind::BASELINE;
 }
 
-bool JSFunction::ActiveTierIsToptierTurboprop() const {
-  return FLAG_turboprop_as_toptier && GetActiveTier() == CodeKind::TURBOPROP;
-}
-
-bool JSFunction::ActiveTierIsMidtierTurboprop() const {
-  return FLAG_turboprop && !FLAG_turboprop_as_toptier &&
-         GetActiveTier() == CodeKind::TURBOPROP;
-}
-
-CodeKind JSFunction::NextTier() const {
-  if (V8_UNLIKELY(FLAG_turboprop) && ActiveTierIsMidtierTurboprop()) {
-    return CodeKind::TURBOFAN;
-  } else if (V8_UNLIKELY(FLAG_turboprop)) {
-    DCHECK(ActiveTierIsIgnition() || ActiveTierIsBaseline());
-    return CodeKind::TURBOPROP;
-  }
-  return CodeKind::TURBOFAN;
-}
+CodeKind JSFunction::NextTier() const { return CodeKind::TURBOFAN; }
 
 bool JSFunction::CanDiscardCompiled() const {
   // Essentially, what we are asking here is, has this function been compiled
@@ -591,6 +570,7 @@ bool CanSubclassHaveInobjectProperties(InstanceType instance_type) {
     case JS_PROMISE_TYPE:
     case JS_REG_EXP_TYPE:
     case JS_SET_TYPE:
+    case JS_SHADOW_REALM_TYPE:
     case JS_SPECIAL_API_OBJECT_TYPE:
     case JS_TYPED_ARRAY_TYPE:
     case JS_PRIMITIVE_WRAPPER_TYPE:

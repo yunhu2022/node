@@ -122,8 +122,7 @@ DEF_ACQUIRE_GETTER(SharedFunctionInfo,
 uint16_t SharedFunctionInfo::internal_formal_parameter_count_with_receiver()
     const {
   const uint16_t param_count = TorqueGeneratedClass::formal_parameter_count();
-  if (param_count == kDontAdaptArgumentsSentinel) return param_count;
-  return param_count + (kJSArgcIncludesReceiver ? 0 : 1);
+  return param_count;
 }
 
 uint16_t SharedFunctionInfo::internal_formal_parameter_count_without_receiver()
@@ -225,7 +224,7 @@ bool SharedFunctionInfo::AreSourcePositionsAvailable(IsolateT* isolate) const {
 
 template <typename IsolateT>
 SharedFunctionInfo::Inlineability SharedFunctionInfo::GetInlineability(
-    IsolateT* isolate, bool is_turboprop) const {
+    IsolateT* isolate) const {
   if (!script().IsScript()) return kHasNoScript;
 
   if (GetIsolate()->is_precise_binary_code_coverage() &&
@@ -244,11 +243,7 @@ SharedFunctionInfo::Inlineability SharedFunctionInfo::GetInlineability(
   // inline.
   if (!HasBytecodeArray()) return kHasNoBytecode;
 
-  int max_inlined_size = FLAG_max_inlined_bytecode_size;
-  if (is_turboprop) {
-    max_inlined_size = max_inlined_size / FLAG_turboprop_inline_scaling_factor;
-  }
-  if (GetBytecodeArray(isolate).length() > max_inlined_size) {
+  if (GetBytecodeArray(isolate).length() > FLAG_max_inlined_bytecode_size) {
     return kExceedsBytecodeLimit;
   }
 
@@ -710,6 +705,10 @@ bool SharedFunctionInfo::HasWasmJSFunctionData() const {
 
 bool SharedFunctionInfo::HasWasmCapiFunctionData() const {
   return function_data(kAcquireLoad).IsWasmCapiFunctionData();
+}
+
+bool SharedFunctionInfo::HasWasmOnFulfilledData() const {
+  return function_data(kAcquireLoad).IsWasmOnFulfilledData();
 }
 
 AsmWasmData SharedFunctionInfo::asm_wasm_data() const {

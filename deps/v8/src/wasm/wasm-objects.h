@@ -91,7 +91,8 @@ class ImportedFunctionEntry {
   // Initialize this entry as a Wasm to JS call. This accepts the isolate as a
   // parameter, since it must allocate a tuple.
   V8_EXPORT_PRIVATE void SetWasmToJs(Isolate*, Handle<JSReceiver> callable,
-                                     const wasm::WasmCode* wasm_to_js_wrapper);
+                                     const wasm::WasmCode* wasm_to_js_wrapper,
+                                     Handle<HeapObject> suspender);
   // Initialize this entry as a Wasm to Wasm call.
   void SetWasmToWasm(WasmInstanceObject target_instance, Address call_target);
 
@@ -201,11 +202,10 @@ class WasmTableObject
                                      uint32_t count);
 
   // TODO(wasm): Unify these three methods into one.
-  static void UpdateDispatchTables(Isolate* isolate,
-                                   Handle<WasmTableObject> table,
+  static void UpdateDispatchTables(Isolate* isolate, WasmTableObject table,
                                    int entry_index,
                                    const wasm::FunctionSig* sig,
-                                   Handle<WasmInstanceObject> target_instance,
+                                   WasmInstanceObject target_instance,
                                    int target_func_index);
   static void UpdateDispatchTables(Isolate* isolate,
                                    Handle<WasmTableObject> table,
@@ -254,7 +254,7 @@ class WasmMemoryObject
                                             Handle<WasmInstanceObject> object);
   inline bool has_maximum_pages();
 
-  V8_EXPORT_PRIVATE static Handle<WasmMemoryObject> New(
+  V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(
       Isolate* isolate, MaybeHandle<JSArrayBuffer> buffer, int maximum);
 
   V8_EXPORT_PRIVATE static MaybeHandle<WasmMemoryObject> New(Isolate* isolate,
@@ -334,7 +334,7 @@ class V8_EXPORT_PRIVATE WasmInstanceObject : public JSObject {
   DECL_OPTIONAL_ACCESSORS(wasm_internal_functions, FixedArray)
   DECL_ACCESSORS(managed_object_maps, FixedArray)
   DECL_ACCESSORS(feedback_vectors, FixedArray)
-  DECL_PRIMITIVE_ACCESSORS(memory_start, byte*)
+  DECL_SANDBOXED_POINTER_ACCESSORS(memory_start, byte*)
   DECL_PRIMITIVE_ACCESSORS(memory_size, size_t)
   DECL_PRIMITIVE_ACCESSORS(isolate_root, Address)
   DECL_PRIMITIVE_ACCESSORS(stack_limit_address, Address)
@@ -597,7 +597,7 @@ class WasmExportedFunction : public JSFunction {
 
   V8_EXPORT_PRIVATE static Handle<WasmExportedFunction> New(
       Isolate* isolate, Handle<WasmInstanceObject> instance, int func_index,
-      int arity, Handle<Code> export_wrapper);
+      int arity, Handle<CodeT> export_wrapper);
 
   Address GetWasmCallTarget();
 
@@ -622,9 +622,11 @@ class WasmJSFunction : public JSFunction {
 
   static Handle<WasmJSFunction> New(Isolate* isolate,
                                     const wasm::FunctionSig* sig,
-                                    Handle<JSReceiver> callable);
+                                    Handle<JSReceiver> callable,
+                                    Handle<HeapObject> suspender);
 
   JSReceiver GetCallable() const;
+  HeapObject GetSuspender() const;
   // Deserializes the signature of this function using the provided zone. Note
   // that lifetime of the signature is hence directly coupled to the zone.
   const wasm::FunctionSig* GetSignature(Zone* zone);
@@ -693,7 +695,6 @@ class WasmFunctionData
     : public TorqueGeneratedWasmFunctionData<WasmFunctionData, HeapObject> {
  public:
   DECL_ACCESSORS(internal, WasmInternalFunction)
-  DECL_ACCESSORS(wrapper_code, Code)
 
   DECL_PRINTER(WasmFunctionData)
 
@@ -736,8 +737,6 @@ class WasmInternalFunction
     : public TorqueGeneratedWasmInternalFunction<WasmInternalFunction,
                                                  Foreign> {
  public:
-  DECL_ACCESSORS(code, Code)
-
   // Returns a handle to the corresponding WasmInternalFunction if {external} is
   // a WasmExternalFunction, or an empty handle otherwise.
   static MaybeHandle<WasmInternalFunction> FromExternal(Handle<Object> external,
@@ -749,9 +748,6 @@ class WasmInternalFunction
   class BodyDescriptor;
 
   TQ_OBJECT_CONSTRUCTORS(WasmInternalFunction)
-
- private:
-  DECL_ACCESSORS(raw_code, CodeT)
 };
 
 // Information for a WasmJSFunction which is referenced as the function data of
@@ -761,7 +757,7 @@ class WasmJSFunctionData
     : public TorqueGeneratedWasmJSFunctionData<WasmJSFunctionData,
                                                WasmFunctionData> {
  public:
-  DECL_ACCESSORS(wasm_to_js_wrapper_code, Code)
+  DECL_ACCESSORS(wasm_to_js_wrapper_code, CodeT)
 
   // Dispatched behavior.
   DECL_PRINTER(WasmJSFunctionData)
@@ -783,6 +779,16 @@ class WasmCapiFunctionData
       FlexibleBodyDescriptor<WasmFunctionData::kStartOfStrongFieldsOffset>;
 
   TQ_OBJECT_CONSTRUCTORS(WasmCapiFunctionData)
+};
+
+class WasmOnFulfilledData
+    : public TorqueGeneratedWasmOnFulfilledData<WasmOnFulfilledData,
+                                                HeapObject> {
+ public:
+  using BodyDescriptor =
+      FlexibleBodyDescriptor<WasmOnFulfilledData::kStartOfStrongFieldsOffset>;
+  DECL_PRINTER(WasmOnFulfilledData)
+  TQ_OBJECT_CONSTRUCTORS(WasmOnFulfilledData)
 };
 
 class WasmScript : public AllStatic {
@@ -970,12 +976,15 @@ class WasmArray : public TorqueGeneratedWasmArray<WasmArray, WasmObject> {
   inline uint32_t element_offset(uint32_t index);
   inline Address ElementAddress(uint32_t index);
 
-  static int MaxLength(const wasm::ArrayType* type) {
+  static int MaxLength(uint32_t element_size_bytes) {
     // The total object size must fit into a Smi, for filler objects. To make
     // the behavior of Wasm programs independent from the Smi configuration,
     // we hard-code the smaller of the two supported ranges.
-    int element_shift = type->element_type().element_size_log2();
-    return (SmiTagging<4>::kSmiMaxValue - kHeaderSize) >> element_shift;
+    return (SmiTagging<4>::kSmiMaxValue - kHeaderSize) / element_size_bytes;
+  }
+
+  static int MaxLength(const wasm::ArrayType* type) {
+    return MaxLength(type->element_type().element_size_bytes());
   }
 
   static inline void EncodeElementSizeInMap(int element_size, Map map);
@@ -1015,6 +1024,7 @@ class WasmContinuationObject
 class WasmSuspenderObject
     : public TorqueGeneratedWasmSuspenderObject<WasmSuspenderObject, JSObject> {
  public:
+  enum State : int { Inactive = 0, Active, Suspended };
   static Handle<WasmSuspenderObject> New(Isolate* isolate);
   // TODO(thibaudm): returnPromiseOnSuspend & suspendOnReturnedPromise.
   DECL_PRINTER(WasmSuspenderObject)
@@ -1031,9 +1041,6 @@ Handle<Map> CreateStructMap(Isolate* isolate, const WasmModule* module,
 Handle<Map> CreateArrayMap(Isolate* isolate, const WasmModule* module,
                            int array_index, MaybeHandle<Map> rtt_parent,
                            Handle<WasmInstanceObject> instance);
-Handle<Map> AllocateSubRtt(Isolate* isolate,
-                           Handle<WasmInstanceObject> instance, uint32_t type,
-                           Handle<Map> parent, WasmRttSubMode mode);
 
 bool TypecheckJSObject(Isolate* isolate, const WasmModule* module,
                        Handle<Object> value, ValueType expected,

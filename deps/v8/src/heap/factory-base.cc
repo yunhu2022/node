@@ -81,6 +81,7 @@ Handle<CodeDataContainer> FactoryBase<Impl>::NewCodeDataContainer(
                                     SKIP_WRITE_BARRIER);
   data_container.set_kind_specific_flags(flags, kRelaxedStore);
   if (V8_EXTERNAL_CODE_SPACE_BOOL) {
+    data_container.set_code_cage_base(impl()->isolate()->code_cage_base());
     Isolate* isolate_for_heap_sandbox = impl()->isolate_for_heap_sandbox();
     data_container.AllocateExternalPointerEntries(isolate_for_heap_sandbox);
     data_container.set_raw_code(Smi::zero(), SKIP_WRITE_BARRIER);
@@ -250,7 +251,7 @@ Handle<Script> FactoryBase<Impl>::NewScriptWithId(
   // Create and initialize script object.
   ReadOnlyRoots roots = read_only_roots();
 #ifdef V8_SCRIPTORMODULE_LEGACY_LIFETIME
-  Handle<ArrayList> list = NewArrayList(0);
+  Handle<ArrayList> list = NewArrayList(0, AllocationType::kOld);
 #endif
   Handle<Script> script = handle(
       NewStructInternal<Script>(SCRIPT_TYPE, AllocationType::kOld), isolate());
@@ -286,8 +287,10 @@ Handle<Script> FactoryBase<Impl>::NewScriptWithId(
 }
 
 template <typename Impl>
-Handle<ArrayList> FactoryBase<Impl>::NewArrayList(int size) {
-  Handle<FixedArray> fixed_array = NewFixedArray(size + ArrayList::kFirstIndex);
+Handle<ArrayList> FactoryBase<Impl>::NewArrayList(int size,
+                                                  AllocationType allocation) {
+  Handle<FixedArray> fixed_array =
+      NewFixedArray(size + ArrayList::kFirstIndex, allocation);
   fixed_array->set_map_no_write_barrier(read_only_roots().array_list_map());
   Handle<ArrayList> result = Handle<ArrayList>::cast(fixed_array);
   result->SetLength(0);

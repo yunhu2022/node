@@ -206,25 +206,6 @@ RUNTIME_FUNCTION(Runtime_IsConcurrentRecompilationSupported) {
       isolate->concurrent_recompilation_enabled());
 }
 
-RUNTIME_FUNCTION(Runtime_DynamicCheckMapsEnabled) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(0, args.length());
-  return isolate->heap()->ToBoolean(FLAG_turbo_dynamic_map_checks);
-}
-
-RUNTIME_FUNCTION(Runtime_IsTopTierTurboprop) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(0, args.length());
-  return isolate->heap()->ToBoolean(FLAG_turboprop_as_toptier);
-}
-
-RUNTIME_FUNCTION(Runtime_IsMidTierTurboprop) {
-  SealHandleScope shs(isolate);
-  DCHECK_EQ(0, args.length());
-  return isolate->heap()->ToBoolean(FLAG_turboprop &&
-                                    !FLAG_turboprop_as_toptier);
-}
-
 RUNTIME_FUNCTION(Runtime_IsAtomicsWaitAllowed) {
   SealHandleScope shs(isolate);
   DCHECK_EQ(0, args.length());
@@ -394,12 +375,6 @@ RUNTIME_FUNCTION(Runtime_CompileBaseline) {
 RUNTIME_FUNCTION(Runtime_OptimizeFunctionOnNextCall) {
   HandleScope scope(isolate);
   return OptimizeFunctionOnNextCall(args, isolate, TierupKind::kTierupBytecode);
-}
-
-RUNTIME_FUNCTION(Runtime_TierupFunctionOnNextCall) {
-  HandleScope scope(isolate);
-  return OptimizeFunctionOnNextCall(args, isolate,
-                                    TierupKind::kTierupBytecodeOrMidTier);
 }
 
 RUNTIME_FUNCTION(Runtime_EnsureFeedbackVectorForFunction) {
@@ -628,7 +603,7 @@ RUNTIME_FUNCTION(Runtime_GetOptimizationStatus) {
   }
 
   if (function->HasAttachedOptimizedCode()) {
-    Code code = function->code();
+    CodeT code = function->code();
     if (code.marked_for_deoptimization()) {
       status |= static_cast<int>(OptimizationStatus::kMarkedForDeoptimization);
     } else {
@@ -1442,7 +1417,7 @@ RUNTIME_FUNCTION(Runtime_EnableCodeLoggingForTesting) {
     void CodeDisableOptEvent(Handle<AbstractCode> code,
                              Handle<SharedFunctionInfo> shared) final {}
     void CodeDeoptEvent(Handle<Code> code, DeoptimizeKind kind, Address pc,
-                        int fp_to_sp_delta, bool reuse_code) final {}
+                        int fp_to_sp_delta) final {}
     void CodeDependencyChangeEvent(Handle<Code> code,
                                    Handle<SharedFunctionInfo> shared,
                                    const char* reason) final {}
@@ -1483,6 +1458,22 @@ RUNTIME_FUNCTION(Runtime_BigIntMaxLengthBits) {
   HandleScope scope(isolate);
   DCHECK_EQ(0, args.length());
   return *isolate->factory()->NewNumber(BigInt::kMaxLengthBits);
+}
+
+RUNTIME_FUNCTION(Runtime_IsSameHeapObject) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(2, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(HeapObject, obj1, 0);
+  CONVERT_ARG_HANDLE_CHECKED(HeapObject, obj2, 1);
+  return isolate->heap()->ToBoolean(obj1->address() == obj2->address());
+}
+
+RUNTIME_FUNCTION(Runtime_IsSharedString) {
+  HandleScope scope(isolate);
+  DCHECK_EQ(1, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(HeapObject, obj, 0);
+  return isolate->heap()->ToBoolean(obj->IsString() &&
+                                    Handle<String>::cast(obj)->IsShared());
 }
 
 }  // namespace internal

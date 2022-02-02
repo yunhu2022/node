@@ -40,7 +40,7 @@ class CpuSampler : public sampler::Sampler {
 
   void SampleStack(const v8::RegisterState& regs) override {
     Isolate* isolate = reinterpret_cast<Isolate*>(this->isolate());
-    if (v8::Locker::WasEverUsed() &&
+    if (isolate->was_locker_ever_used() &&
         (!isolate->thread_manager()->IsLockedByThread(
              perThreadData_->thread_id()) ||
          perThreadData_->thread_state() != nullptr)) {
@@ -413,7 +413,7 @@ void ProfilerCodeObserver::LogBuiltins() {
        ++builtin) {
     CodeEventsContainer evt_rec(CodeEventRecord::Type::kReportBuiltin);
     ReportBuiltinEventRecord* rec = &evt_rec.ReportBuiltinEventRecord_;
-    Code code = builtins->code(builtin);
+    Code code = FromCodeT(builtins->code(builtin));
     rec->instruction_start = code.InstructionStart();
     rec->instruction_size = code.InstructionSize();
     rec->builtin = builtin;

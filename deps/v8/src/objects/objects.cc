@@ -49,6 +49,7 @@
 #include "src/objects/api-callbacks.h"
 #include "src/objects/arguments-inl.h"
 #include "src/objects/bigint.h"
+#include "src/objects/call-site-info-inl.h"
 #include "src/objects/cell-inl.h"
 #include "src/objects/code-inl.h"
 #include "src/objects/compilation-cache-table-inl.h"
@@ -110,7 +111,6 @@
 #include "src/objects/property-descriptor.h"
 #include "src/objects/prototype.h"
 #include "src/objects/slots-atomic-inl.h"
-#include "src/objects/stack-frame-info-inl.h"
 #include "src/objects/string-comparator.h"
 #include "src/objects/string-set-inl.h"
 #include "src/objects/struct-inl.h"
@@ -427,7 +427,7 @@ namespace {
 
 bool IsErrorObject(Isolate* isolate, Handle<Object> object) {
   if (!object->IsJSReceiver()) return false;
-  Handle<Symbol> symbol = isolate->factory()->stack_trace_symbol();
+  Handle<Symbol> symbol = isolate->factory()->error_stack_symbol();
   return JSReceiver::HasOwnProperty(Handle<JSReceiver>::cast(object), symbol)
       .FromMaybe(false);
 }
@@ -2326,6 +2326,7 @@ bool HeapObject::NeedsRehashing(InstanceType instance_type) const {
     case ORDERED_HASH_SET_TYPE:
       return false;  // We'll rehash from the JSMap or JSSet referencing them.
     case NAME_DICTIONARY_TYPE:
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
     case SIMPLE_NUMBER_DICTIONARY_TYPE:
@@ -2354,6 +2355,7 @@ bool HeapObject::CanBeRehashed(PtrComprCageBase cage_base) const {
     case ORDERED_NAME_DICTIONARY_TYPE:
       return false;
     case NAME_DICTIONARY_TYPE:
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
     case GLOBAL_DICTIONARY_TYPE:
     case NUMBER_DICTIONARY_TYPE:
     case SIMPLE_NUMBER_DICTIONARY_TYPE:
@@ -2382,6 +2384,9 @@ void HeapObject::RehashBasedOnMap(IsolateT* isolate) {
       UNREACHABLE();
     case NAME_DICTIONARY_TYPE:
       NameDictionary::cast(*this).Rehash(isolate);
+      break;
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
+      NameToIndexHashTable::cast(*this).Rehash(isolate);
       break;
     case SWISS_NAME_DICTIONARY_TYPE:
       SwissNameDictionary::cast(*this).Rehash(isolate);
@@ -4804,6 +4809,17 @@ bool Script::GetPositionInfo(Handle<Script> script, int position,
   return script->GetPositionInfo(position, info, offset_flag);
 }
 
+bool Script::IsSubjectToDebugging() const {
+  switch (type()) {
+    case TYPE_NORMAL:
+#if V8_ENABLE_WEBASSEMBLY
+    case TYPE_WASM:
+#endif  // V8_ENABLE_WEBASSEMBLY
+      return true;
+  }
+  return false;
+}
+
 bool Script::IsUserJavaScript() const { return type() == Script::TYPE_NORMAL; }
 
 #if V8_ENABLE_WEBASSEMBLY
@@ -5870,12 +5886,6 @@ InternalIndex HashTable<Derived, Shape>::FindInsertionEntry(
   }
 }
 
-template <typename Derived, typename Shape>
-InternalIndex HashTable<Derived, Shape>::FindInsertionEntry(Isolate* isolate,
-                                                            uint32_t hash) {
-  return FindInsertionEntry(isolate, ReadOnlyRoots(isolate), hash);
-}
-
 base::Optional<PropertyCell>
 GlobalDictionary::TryFindPropertyCellForConcurrentLookupIterator(
     Isolate* isolate, Handle<Name> name, RelaxedLoadTag tag) {
@@ -6216,6 +6226,18 @@ Object ObjectHashTableBase<Derived, Shape>::Lookup(PtrComprCageBase cage_base,
   return this->get(Derived::EntryToIndex(entry) + 1);
 }
 
+// The implementation should be in sync with
+// CodeStubAssembler::NameToIndexHashTableLookup.
+int NameToIndexHashTable::Lookup(Handle<Name> key) {
+  DisallowGarbageCollection no_gc;
+  PtrComprCageBase cage_base = GetPtrComprCageBase(*this);
+  ReadOnlyRoots roots = this->GetReadOnlyRoots(cage_base);
+
+  InternalIndex entry = this->FindEntry(cage_base, roots, key, key->hash());
+  if (entry.is_not_found()) return -1;
+  return Smi::cast(this->get(EntryToValueIndex(entry))).value();
+}
+
 template <typename Derived, typename Shape>
 Object ObjectHashTableBase<Derived, Shape>::Lookup(Handle<Object> key) {
   DisallowGarbageCollection no_gc;
@@ -6241,6 +6263,20 @@ Object ObjectHashTableBase<Derived, Shape>::Lookup(Handle<Object> key,
 template <typename Derived, typename Shape>
 Object ObjectHashTableBase<Derived, Shape>::ValueAt(InternalIndex entry) {
   return this->get(EntryToValueIndex(entry));
+}
+
+Object NameToIndexHashTable::ValueAt(InternalIndex entry) {
+  return this->get(EntryToValueIndex(entry));
+}
+
+int NameToIndexHashTable::IndexAt(InternalIndex entry) {
+  Object value = ValueAt(entry);
+  if (value.IsSmi()) {
+    int index = Smi::ToInt(value);
+    DCHECK_LE(0, index);
+    return index;
+  }
+  return -1;
 }
 
 template <typename Derived, typename Shape>
@@ -6277,7 +6313,7 @@ Handle<Derived> ObjectHashTableBase<Derived, Shape>::Put(Isolate* isolate,
   }
 
   // Rehash if more than 33% of the entries are deleted entries.
-  // TODO(jochen): Consider to shrink the fixed array in place.
+  // TODO(verwaest): Consider to shrink the fixed array in place.
   if ((table->NumberOfDeletedElements() << 1) > table->NumberOfElements()) {
     table->Rehash(isolate);
   }
@@ -6492,38 +6528,36 @@ Handle<PropertyCell> PropertyCell::InvalidateAndReplaceEntry(
   return new_cell;
 }
 
-static bool RemainsConstantType(Handle<PropertyCell> cell,
-                                Handle<Object> value) {
+static bool RemainsConstantType(PropertyCell cell, Object value) {
+  DisallowGarbageCollection no_gc;
   // TODO(dcarney): double->smi and smi->double transition from kConstant
-  if (cell->value().IsSmi() && value->IsSmi()) {
+  if (cell.value().IsSmi() && value.IsSmi()) {
     return true;
-  } else if (cell->value().IsHeapObject() && value->IsHeapObject()) {
-    return HeapObject::cast(cell->value()).map() ==
-               HeapObject::cast(*value).map() &&
-           HeapObject::cast(*value).map().is_stable();
+  } else if (cell.value().IsHeapObject() && value.IsHeapObject()) {
+    Map map = HeapObject::cast(value).map();
+    return HeapObject::cast(cell.value()).map() == map && map.is_stable();
   }
   return false;
 }
 
 // static
-PropertyCellType PropertyCell::InitialType(Isolate* isolate,
-                                           Handle<Object> value) {
-  return value->IsUndefined(isolate) ? PropertyCellType::kUndefined
-                                     : PropertyCellType::kConstant;
+PropertyCellType PropertyCell::InitialType(Isolate* isolate, Object value) {
+  return value.IsUndefined(isolate) ? PropertyCellType::kUndefined
+                                    : PropertyCellType::kConstant;
 }
 
 // static
-PropertyCellType PropertyCell::UpdatedType(Isolate* isolate,
-                                           Handle<PropertyCell> cell,
-                                           Handle<Object> value,
+PropertyCellType PropertyCell::UpdatedType(Isolate* isolate, PropertyCell cell,
+                                           Object value,
                                            PropertyDetails details) {
-  DCHECK(!value->IsTheHole(isolate));
-  DCHECK(!cell->value().IsTheHole(isolate));
+  DisallowGarbageCollection no_gc;
+  DCHECK(!value.IsTheHole(isolate));
+  DCHECK(!cell.value().IsTheHole(isolate));
   switch (details.cell_type()) {
     case PropertyCellType::kUndefined:
       return PropertyCellType::kConstant;
     case PropertyCellType::kConstant:
-      if (*value == cell->value()) return PropertyCellType::kConstant;
+      if (value == cell.value()) return PropertyCellType::kConstant;
       V8_FALLTHROUGH;
     case PropertyCellType::kConstantType:
       if (RemainsConstantType(cell, value)) {
@@ -6541,9 +6575,9 @@ Handle<PropertyCell> PropertyCell::PrepareForAndSetValue(
     Isolate* isolate, Handle<GlobalDictionary> dictionary, InternalIndex entry,
     Handle<Object> value, PropertyDetails details) {
   DCHECK(!value->IsTheHole(isolate));
-  Handle<PropertyCell> cell(dictionary->CellAt(entry), isolate);
-  CHECK(!cell->value().IsTheHole(isolate));
-  const PropertyDetails original_details = cell->property_details();
+  PropertyCell raw_cell = dictionary->CellAt(entry);
+  CHECK(!raw_cell.value().IsTheHole(isolate));
+  const PropertyDetails original_details = raw_cell.property_details();
   // Data accesses could be cached in ics or optimized code.
   bool invalidate = original_details.kind() == PropertyKind::kData &&
                     details.kind() == PropertyKind::kAccessor;
@@ -6552,8 +6586,10 @@ Handle<PropertyCell> PropertyCell::PrepareForAndSetValue(
   details = details.set_index(index);
 
   PropertyCellType new_type =
-      UpdatedType(isolate, cell, value, original_details);
+      UpdatedType(isolate, raw_cell, *value, original_details);
   details = details.set_cell_type(new_type);
+
+  Handle<PropertyCell> cell(raw_cell, isolate);
 
   if (invalidate) {
     cell = PropertyCell::InvalidateAndReplaceEntry(isolate, dictionary, entry,
@@ -6817,6 +6853,7 @@ Address Smi::LexicographicCompare(Isolate* isolate, Smi x, Smi y) {
 EXTERN_DEFINE_HASH_TABLE(StringSet, StringSetShape)
 EXTERN_DEFINE_HASH_TABLE(CompilationCacheTable, CompilationCacheShape)
 EXTERN_DEFINE_HASH_TABLE(ObjectHashSet, ObjectHashSetShape)
+EXTERN_DEFINE_HASH_TABLE(NameToIndexHashTable, NameToIndexShape)
 
 EXTERN_DEFINE_OBJECT_BASE_HASH_TABLE(ObjectHashTable, ObjectHashTableShape)
 EXTERN_DEFINE_OBJECT_BASE_HASH_TABLE(EphemeronHashTable, ObjectHashTableShape)

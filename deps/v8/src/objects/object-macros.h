@@ -57,6 +57,10 @@
 
 #define DECL_INT32_ACCESSORS(name) DECL_PRIMITIVE_ACCESSORS(name, int32_t)
 
+#define DECL_SANDBOXED_POINTER_ACCESSORS(name, type) \
+  DECL_PRIMITIVE_GETTER(name, type)                  \
+  DECL_PRIMITIVE_SETTER(name, type)
+
 #define DECL_RELAXED_INT32_ACCESSORS(name)   \
   inline int32_t name(RelaxedLoadTag) const; \
   inline void set_##name(int32_t value, RelaxedStoreTag);
@@ -484,6 +488,8 @@
         WriteBarrier::Marking(object, (object).RawField(offset), value); \
       }                                                                  \
       GenerationalBarrier(object, (object).RawField(offset), value);     \
+    } else {                                                             \
+      SLOW_DCHECK(!WriteBarrier::IsRequired(object, value));             \
     }                                                                    \
   } while (false)
 #endif
@@ -504,6 +510,8 @@
                               value);                                         \
       }                                                                       \
       GenerationalBarrier(object, (object).RawMaybeWeakField(offset), value); \
+    } else {                                                                  \
+      SLOW_DCHECK(!WriteBarrier::IsRequired(object, value));                  \
     }                                                                         \
   } while (false)
 #endif
@@ -522,6 +530,8 @@
       }                                                                      \
       GenerationalEphemeronKeyBarrier(table, (object).RawField(offset),      \
                                       value);                                \
+    } else {                                                                 \
+      SLOW_DCHECK(!WriteBarrier::IsRequired(object, value));                 \
     }                                                                        \
   } while (false)
 #endif

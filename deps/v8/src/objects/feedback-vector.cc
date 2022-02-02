@@ -261,9 +261,7 @@ Handle<FeedbackVector> FeedbackVector::New(
   DCHECK_EQ(vector->length(), slot_count);
 
   DCHECK_EQ(vector->shared_function_info(), *shared);
-  DCHECK_EQ(vector->optimization_marker(),
-            FLAG_log_function_events ? OptimizationMarker::kLogFirstExecution
-                                     : OptimizationMarker::kNone);
+  DCHECK_EQ(vector->optimization_marker(), OptimizationMarker::kNone);
   DCHECK_EQ(vector->optimization_tier(), OptimizationTier::kNone);
   DCHECK_EQ(vector->invocation_count(), 0);
   DCHECK_EQ(vector->profiler_ticks(), 0);
@@ -390,53 +388,31 @@ void FeedbackVector::SaturatingIncrementProfilerTicks() {
 
 // static
 void FeedbackVector::SetOptimizedCode(Handle<FeedbackVector> vector,
-                                      Handle<Code> code,
+                                      Handle<CodeT> code,
                                       FeedbackCell feedback_cell) {
   DCHECK(CodeKindIsOptimizedJSFunction(code->kind()));
-  // We should set optimized code only when there is no valid optimized code or
-  // we are tiering up.
+  // We should set optimized code only when there is no valid optimized code.
   DCHECK(!vector->has_optimized_code() ||
          vector->optimized_code().marked_for_deoptimization() ||
-         (vector->optimized_code().kind() == CodeKind::TURBOPROP &&
-          code->kind() == CodeKind::TURBOFAN) ||
          FLAG_stress_concurrent_inlining_attach_code);
   // TODO(mythria): We could see a CompileOptimized marker here either from
   // tests that use %OptimizeFunctionOnNextCall, --always-opt or because we
   // re-mark the function for non-concurrent optimization after an OSR. We
   // should avoid these cases and also check that marker isn't
   // kCompileOptimized or kCompileOptimizedConcurrent.
-  vector->set_maybe_optimized_code(HeapObjectReference::Weak(ToCodeT(*code)),
+  vector->set_maybe_optimized_code(HeapObjectReference::Weak(*code),
                                    kReleaseStore);
   int32_t state = vector->flags();
   state = OptimizationTierBits::update(state, GetTierForCodeKind(code->kind()));
   state = OptimizationMarkerBits::update(state, OptimizationMarker::kNone);
   vector->set_flags(state);
-  // With FLAG_turboprop, we would have an interrupt budget necessary for
-  // tiering up to Turboprop code. Once we install turboprop code, set it to a
-  // higher value as required for tiering up from Turboprop to TurboFan.
-  if (FLAG_turboprop) {
-    FeedbackVector::SetInterruptBudget(feedback_cell);
-  }
 }
 
 // static
 void FeedbackVector::SetInterruptBudget(FeedbackCell feedback_cell) {
   DCHECK(feedback_cell.value().IsFeedbackVector());
-  FeedbackVector vector = FeedbackVector::cast(feedback_cell.value());
-  // Set the interrupt budget as required for tiering up to next level. Without
-  // Turboprop, this is used only to tier up to TurboFan and hence always set to
-  // FLAG_interrupt_budget. With Turboprop, we use this budget to both tier up
-  // to Turboprop and TurboFan. When there is no optimized code, set it to
-  // FLAG_interrupt_budget required for tiering up to Turboprop. When there is
-  // optimized code, set it to a higher value required for tiering up from
-  // Turboprop to TurboFan.
-  if (FLAG_turboprop && vector.has_optimized_code()) {
-    feedback_cell.set_interrupt_budget(
-        FLAG_interrupt_budget *
-        FLAG_interrupt_budget_scale_factor_for_top_tier);
-  } else {
-    feedback_cell.set_interrupt_budget(FLAG_interrupt_budget);
-  }
+  // Set the interrupt budget as required for tiering up to next level.
+  feedback_cell.set_interrupt_budget(FLAG_interrupt_budget);
 }
 
 void FeedbackVector::ClearOptimizedCode(FeedbackCell feedback_cell) {
@@ -461,18 +437,11 @@ void FeedbackVector::ClearOptimizationTier(FeedbackCell feedback_cell) {
   int32_t state = flags();
   state = OptimizationTierBits::update(state, OptimizationTier::kNone);
   set_flags(state);
-  // We are discarding the optimized code, adjust the interrupt budget
-  // so we have the correct budget required for the tier up.
-  if (FLAG_turboprop) {
-    FeedbackVector::SetInterruptBudget(feedback_cell);
-  }
 }
 
 void FeedbackVector::InitializeOptimizationState() {
   int32_t state = 0;
-  state = OptimizationMarkerBits::update(
-      state, FLAG_log_function_events ? OptimizationMarker::kLogFirstExecution
-                                      : OptimizationMarker::kNone);
+  state = OptimizationMarkerBits::update(state, OptimizationMarker::kNone);
   state = OptimizationTierBits::update(state, OptimizationTier::kNone);
   set_flags(state);
 }
@@ -1009,8 +978,9 @@ void FeedbackNexus::SetSpeculationMode(SpeculationMode mode) {
   uint32_t count = static_cast<uint32_t>(Smi::ToInt(call_count));
   count = SpeculationModeField::update(count, mode);
   MaybeObject feedback = GetFeedback();
-  // We can skip the write barrier for {feedback} because it's not changing.
-  SetFeedback(feedback, SKIP_WRITE_BARRIER, Smi::FromInt(count),
+  // We could've skipped WB here (since we set the slot to the same value again)
+  // but we don't to make WB verification happy.
+  SetFeedback(feedback, UPDATE_WRITE_BARRIER, Smi::FromInt(count),
               SKIP_WRITE_BARRIER);
 }
 

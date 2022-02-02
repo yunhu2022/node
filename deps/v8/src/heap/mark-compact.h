@@ -508,11 +508,16 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
   struct RecordRelocSlotInfo {
     MemoryChunk* memory_chunk;
     SlotType slot_type;
-    bool should_record;
     uint32_t offset;
   };
-  static RecordRelocSlotInfo PrepareRecordRelocSlot(Code host, RelocInfo* rinfo,
-                                                    HeapObject target);
+
+  static V8_EXPORT_PRIVATE bool IsMapOrForwardedMap(Map map);
+
+  static bool ShouldRecordRelocSlot(Code host, RelocInfo* rinfo,
+                                    HeapObject target);
+  static RecordRelocSlotInfo ProcessRelocInfo(Code host, RelocInfo* rinfo,
+                                              HeapObject target);
+
   static void RecordRelocSlot(Code host, RelocInfo* rinfo, HeapObject target);
   V8_INLINE static void RecordSlot(HeapObject object, ObjectSlot slot,
                                    HeapObject target);
@@ -622,6 +627,9 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
   // Free unmarked ArrayBufferExtensions.
   void SweepArrayBufferExtensions();
 
+  // Free unmarked entries in the ExternalPointerTable.
+  void SweepExternalPointerTable();
+
   void MarkLiveObjects() override;
 
   // Marks the object grey and adds it to the marking work list.
@@ -642,6 +650,7 @@ class MarkCompactCollector final : public MarkCompactCollectorBase {
 
   // Updates pointers to shared objects from client heaps.
   void UpdatePointersInClientHeaps();
+  void UpdatePointersInClientHeap(Isolate* client);
 
   // Marks object reachable from harmony weak maps and wrapper tracing.
   void ProcessEphemeronMarking();

@@ -48,6 +48,13 @@ class BuildFlags : public ContextualClass<BuildFlags> {
     build_flags_["V8_SFI_HAS_UNIQUE_ID"] = V8_SFI_HAS_UNIQUE_ID;
     build_flags_["V8_EXTERNAL_CODE_SPACE"] = V8_EXTERNAL_CODE_SPACE_BOOL;
     build_flags_["TAGGED_SIZE_8_BYTES"] = TAGGED_SIZE_8_BYTES;
+    build_flags_["V8_ENABLE_SWISS_NAME_DICTIONARY"] =
+        V8_ENABLE_SWISS_NAME_DICTIONARY_BOOL;
+#ifdef V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS
+    build_flags_["V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS"] = true;
+#else
+    build_flags_["V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS"] = false;
+#endif
     build_flags_["TRUE_FOR_TESTING"] = true;
     build_flags_["FALSE_FOR_TESTING"] = false;
 #ifdef V8_SCRIPTORMODULE_LEGACY_LIFETIME
@@ -267,6 +274,8 @@ V8_EXPORT_PRIVATE const ParseResultTypeId
         ParseResultTypeId::kGenericParameters;
 
 namespace {
+
+bool ProcessIfAnnotation(ParseResultIterator* child_results);
 
 base::Optional<ParseResult> AddGlobalDeclarations(
     ParseResultIterator* child_results) {
@@ -695,9 +704,11 @@ base::Optional<ParseResult> MakeExternConstDeclaration(
 
 base::Optional<ParseResult> MakeTypeAliasDeclaration(
     ParseResultIterator* child_results) {
+  bool enabled = ProcessIfAnnotation(child_results);
   auto name = child_results->NextAs<Identifier*>();
   auto type = child_results->NextAs<TypeExpression*>();
-  Declaration* result = MakeNode<TypeAliasDeclaration>(name, type);
+  std::vector<Declaration*> result = {};
+  if (enabled) result = {MakeNode<TypeAliasDeclaration>(name, type)};
   return ParseResult{result};
 }
 
@@ -839,6 +850,20 @@ class AnnotationSet {
   std::set<std::string> set_;
   std::map<std::string, std::pair<AnnotationParameter, SourcePosition>> map_;
 };
+
+bool ProcessIfAnnotation(ParseResultIterator* child_results) {
+  AnnotationSet annotations(child_results, {},
+                            {ANNOTATION_IF, ANNOTATION_IFNOT});
+  if (base::Optional<std::string> condition =
+          annotations.GetStringParam(ANNOTATION_IF)) {
+    if (!BuildFlags::GetFlag(*condition, ANNOTATION_IF)) return false;
+  }
+  if (base::Optional<std::string> condition =
+          annotations.GetStringParam(ANNOTATION_IFNOT)) {
+    if (BuildFlags::GetFlag(*condition, ANNOTATION_IFNOT)) return false;
+  }
+  return true;
+}
 
 base::Optional<ParseResult> MakeInt32(ParseResultIterator* child_results) {
   std::string value = child_results->NextAs<std::string>();
@@ -2205,21 +2230,10 @@ struct TorqueGrammar : Grammar {
       ParseResultIterator* child_results) {
     std::vector<T> l = {};
     if (!first) l = child_results->NextAs<std::vector<T>>();
-    AnnotationSet annotations(child_results, {},
-                              {ANNOTATION_IF, ANNOTATION_IFNOT});
-    bool skipped = false;
-    if (base::Optional<std::string> condition =
-            annotations.GetStringParam(ANNOTATION_IF)) {
-      if (!BuildFlags::GetFlag(*condition, ANNOTATION_IF)) skipped = true;
-    }
-    if (base::Optional<std::string> condition =
-            annotations.GetStringParam(ANNOTATION_IFNOT)) {
-      if (BuildFlags::GetFlag(*condition, ANNOTATION_IFNOT)) skipped = true;
-    }
+    bool enabled = ProcessIfAnnotation(child_results);
     T x = child_results->NextAs<T>();
 
-    if (skipped) return ParseResult{std::move(l)};
-    l.push_back(std::move(x));
+    if (enabled) l.push_back(std::move(x));
     return ParseResult{std::move(l)};
   }
 
@@ -2721,8 +2735,8 @@ struct TorqueGrammar : Grammar {
                 Sequence({Token("constexpr"), &externalString})),
             Token(";")},
            MakeAbstractTypeDeclaration),
-      Rule({Token("type"), &name, Token("="), &type, Token(";")},
-           AsSingletonVector<Declaration*, MakeTypeAliasDeclaration>()),
+      Rule({annotations, Token("type"), &name, Token("="), &type, Token(";")},
+           MakeTypeAliasDeclaration),
       Rule({Token("intrinsic"), &intrinsicName,
             TryOrDefault<GenericParameters>(&genericParameters),
             &parameterListNoVararg, &returnType, &optionalBody},

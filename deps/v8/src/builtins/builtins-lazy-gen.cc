@@ -19,8 +19,7 @@ void LazyBuiltinsAssembler::GenerateTailCallToJSCode(
   auto argc = UncheckedParameter<Int32T>(Descriptor::kActualArgumentsCount);
   auto context = Parameter<Context>(Descriptor::kContext);
   auto new_target = Parameter<Object>(Descriptor::kNewTarget);
-  // TODO(v8:11880): call CodeT directly.
-  TailCallJSCode(FromCodeT(code), context, function, new_target, argc);
+  TailCallJSCode(code, context, function, new_target, argc);
 }
 
 void LazyBuiltinsAssembler::GenerateTailCallToReturnedCode(
@@ -54,17 +53,14 @@ void LazyBuiltinsAssembler::MaybeTailCallOptimizedCodeSlot(
                 FeedbackVector::kHasOptimizedCodeOrCompileOptimizedMarkerMask),
             &fallthrough);
 
-  GotoIfNot(IsSetWord32(
-                optimization_state,
-                FeedbackVector::kHasCompileOptimizedOrLogFirstExecutionMarker),
+  GotoIfNot(IsSetWord32(optimization_state,
+                        FeedbackVector::kHasCompileOptimizedMarker),
             &may_have_optimized_code);
 
   // TODO(ishell): introduce Runtime::kHandleOptimizationMarker and check
   // all these marker values there.
   TNode<Uint32T> marker =
       DecodeWord32<FeedbackVector::OptimizationMarkerBits>(optimization_state);
-  TailCallRuntimeIfMarkerEquals(marker, OptimizationMarker::kLogFirstExecution,
-                                Runtime::kFunctionFirstExecution, function);
   TailCallRuntimeIfMarkerEquals(marker, OptimizationMarker::kCompileOptimized,
                                 Runtime::kCompileOptimized_NotConcurrent,
                                 function);
@@ -145,7 +141,7 @@ void LazyBuiltinsAssembler::CompileLazy(TNode<JSFunction> function) {
   // optimized Code object (we'd have tail-called it above). A usual case would
   // be the InterpreterEntryTrampoline to start executing existing bytecode.
   BIND(&maybe_use_sfi_code);
-  CSA_DCHECK(this, TaggedNotEqual(sfi_code, HeapConstant(BUILTIN_CODET(
+  CSA_DCHECK(this, TaggedNotEqual(sfi_code, HeapConstant(BUILTIN_CODE(
                                                 isolate(), CompileLazy))));
   StoreObjectField(function, JSFunction::kCodeOffset, sfi_code);
 
@@ -187,7 +183,7 @@ TF_BUILTIN(CompileLazy, LazyBuiltinsAssembler) {
 TF_BUILTIN(CompileLazyDeoptimizedCode, LazyBuiltinsAssembler) {
   auto function = Parameter<JSFunction>(Descriptor::kTarget);
 
-  TNode<CodeT> code = HeapConstant(BUILTIN_CODET(isolate(), CompileLazy));
+  TNode<CodeT> code = HeapConstant(BUILTIN_CODE(isolate(), CompileLazy));
   // Set the code slot inside the JSFunction to CompileLazy.
   StoreObjectField(function, JSFunction::kCodeOffset, code);
   GenerateTailCallToJSCode(code, function);

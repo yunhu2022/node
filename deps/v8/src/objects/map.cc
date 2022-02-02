@@ -129,6 +129,7 @@ VisitorId Map::GetVisitorId(Map map) {
       return kVisitEmbedderDataArray;
 
     case OBJECT_BOILERPLATE_DESCRIPTION_TYPE:
+    case NAME_TO_INDEX_HASH_TABLE_TYPE:
     case CLOSURE_FEEDBACK_CELL_ARRAY_TYPE:
     case HASH_TABLE_TYPE:
     case ORDERED_HASH_MAP_TYPE:
@@ -271,6 +272,7 @@ VisitorId Map::GetVisitorId(Map map) {
     case JS_SET_PROTOTYPE_TYPE:
     case JS_SET_TYPE:
     case JS_SET_VALUE_ITERATOR_TYPE:
+    case JS_SHADOW_REALM_TYPE:
     case JS_STRING_ITERATOR_PROTOTYPE_TYPE:
     case JS_STRING_ITERATOR_TYPE:
     case JS_TEMPORAL_CALENDAR_TYPE:
@@ -372,6 +374,8 @@ VisitorId Map::GetVisitorId(Map map) {
       return kVisitWasmInternalFunction;
     case WASM_JS_FUNCTION_DATA_TYPE:
       return kVisitWasmJSFunctionData;
+    case WASM_ON_FULFILLED_DATA_TYPE:
+      return kVisitWasmOnFulfilledData;
     case WASM_API_FUNCTION_REF_TYPE:
       return kVisitWasmApiFunctionRef;
     case WASM_EXPORTED_FUNCTION_DATA_TYPE:
@@ -2054,16 +2058,21 @@ Handle<Map> Map::CopyReplaceDescriptor(Isolate* isolate, Handle<Map> map,
 
 int Map::Hash() {
   // For performance reasons we only hash the 2 most variable fields of a map:
-  // prototype map and bit_field2. For predictability reasons  we use objects'
-  // offsets in respective pages for hashing instead of raw addresses. We use
-  // the map of  the prototype because the prototype itself could be compacted,
-  // whereas the map will not be moved.
-  // NOTE: If we want to compact maps, this hash function won't work as intended
-  // anymore.
+  // prototype and bit_field2.
 
-  // Shift away the tag.
-  int hash = ObjectAddressForHashing(prototype().map().ptr()) >> 2;
-  return hash ^ bit_field2();
+  HeapObject prototype = this->prototype();
+  int prototype_hash;
+
+  if (prototype.IsNull()) {
+    // No identity hash for null, so just pick a random number.
+    prototype_hash = 1;
+  } else {
+    JSReceiver receiver = JSReceiver::cast(prototype);
+    Isolate* isolate = GetIsolateFromWritableObject(receiver);
+    prototype_hash = receiver.GetOrCreateIdentityHash(isolate).value();
+  }
+
+  return prototype_hash ^ bit_field2();
 }
 
 namespace {

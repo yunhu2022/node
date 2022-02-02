@@ -5,6 +5,7 @@
 #include "src/heap/mark-compact.h"
 
 #include <unordered_map>
+#include <unordered_set>
 
 #include "src/base/logging.h"
 #include "src/base/optional.h"
@@ -19,6 +20,7 @@
 #include "src/execution/vm-state-inl.h"
 #include "src/handles/global-handles.h"
 #include "src/heap/array-buffer-sweeper.h"
+#include "src/heap/basic-memory-chunk.h"
 #include "src/heap/code-object-registry.h"
 #include "src/heap/gc-tracer.h"
 #include "src/heap/heap.h"
@@ -51,6 +53,7 @@
 #include "src/objects/js-array-buffer-inl.h"
 #include "src/objects/js-objects-inl.h"
 #include "src/objects/maybe-object.h"
+#include "src/objects/objects.h"
 #include "src/objects/slots-inl.h"
 #include "src/objects/smi.h"
 #include "src/objects/transitions-inl.h"
@@ -507,6 +510,17 @@ void MarkCompactCollector::TearDown() {
   sweeper()->TearDown();
 }
 
+// static
+bool MarkCompactCollector::IsMapOrForwardedMap(Map map) {
+  MapWord map_word = map.map_word(kRelaxedLoad);
+
+  if (map_word.IsForwardingAddress()) {
+    return map_word.ToForwardingAddress().IsMap();
+  } else {
+    return map_word.ToMap().IsMap();
+  }
+}
+
 void MarkCompactCollector::AddEvacuationCandidate(Page* p) {
   DCHECK(!p->NeverEvacuate());
 
@@ -543,6 +557,10 @@ bool MarkCompactCollector::StartCompaction(StartCompactionMode mode) {
 
   CollectEvacuationCandidates(heap()->old_space());
 
+  if (FLAG_compact_map_space) {
+    CollectEvacuationCandidates(heap()->map_space());
+  }
+
   if (FLAG_compact_code_space &&
       (heap()->IsGCWithoutStack() || FLAG_compact_code_space_with_stack)) {
     CollectEvacuationCandidates(heap()->code_space());
@@ -570,8 +588,11 @@ void MarkCompactCollector::StartMarking() {
   }
   code_flush_mode_ = Heap::GetCodeFlushMode(isolate());
   marking_worklists()->CreateContextWorklists(contexts);
-  local_marking_worklists_ =
-      std::make_unique<MarkingWorklists::Local>(marking_worklists());
+  auto* cpp_heap = CppHeap::From(heap_->cpp_heap());
+  local_marking_worklists_ = std::make_unique<MarkingWorklists::Local>(
+      marking_worklists(),
+      cpp_heap ? cpp_heap->CreateCppMarkingStateForMutatorThread()
+               : MarkingWorklists::Local::kNoCppMarkingState);
   local_weak_objects_ = std::make_unique<WeakObjects::Local>(weak_objects());
   marking_visitor_ = std::make_unique<MarkingVisitor>(
       marking_state(), local_marking_worklists(), local_weak_objects_.get(),
@@ -736,7 +757,8 @@ void MarkCompactCollector::ComputeEvacuationHeuristics(
 }
 
 void MarkCompactCollector::CollectEvacuationCandidates(PagedSpace* space) {
-  DCHECK(space->identity() == OLD_SPACE || space->identity() == CODE_SPACE);
+  DCHECK(space->identity() == OLD_SPACE || space->identity() == CODE_SPACE ||
+         space->identity() == MAP_SPACE);
 
   int number_of_pages = space->CountTotalPages();
   size_t area_size = space->AreaSize();
@@ -924,8 +946,11 @@ void MarkCompactCollector::Prepare() {
   if (!was_marked_incrementally_) {
     {
       TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_EMBEDDER_PROLOGUE);
-      heap_->local_embedder_heap_tracer()->TracePrologue(
-          heap_->flags_for_embedder_tracer());
+      auto embedder_flags = heap_->flags_for_embedder_tracer();
+      // PrepareForTrace should be called before visitor initialization in
+      // StartMarking.
+      heap_->local_embedder_heap_tracer()->PrepareForTrace(embedder_flags);
+      heap_->local_embedder_heap_tracer()->TracePrologue(embedder_flags);
     }
     StartCompaction(StartCompactionMode::kAtomic);
     StartMarking();
@@ -1165,17 +1190,18 @@ class MarkCompactCollector::SharedHeapObjectVisitor final
         collector_(collector) {}
 
   void VisitPointer(HeapObject host, ObjectSlot p) final {
-    MarkObject(host, p.load(cage_base()));
+    MarkObject(host, p, p.load(cage_base()));
   }
 
   void VisitPointer(HeapObject host, MaybeObjectSlot p) final {
     MaybeObject object = p.load(cage_base());
     HeapObject heap_object;
-    if (object.GetHeapObject(&heap_object)) MarkObject(host, heap_object);
+    if (object.GetHeapObject(&heap_object))
+      MarkObject(host, ObjectSlot(p), heap_object);
   }
 
   void VisitMapPointer(HeapObject host) final {
-    MarkObject(host, host.map(cage_base()));
+    MarkObject(host, host.map_slot(), host.map(cage_base()));
   }
 
   void VisitPointers(HeapObject host, ObjectSlot start, ObjectSlot end) final {
@@ -1183,13 +1209,13 @@ class MarkCompactCollector::SharedHeapObjectVisitor final
       // The map slot should be handled in VisitMapPointer.
       DCHECK_NE(host.map_slot(), p);
       DCHECK(!HasWeakHeapObjectTag(p.load(cage_base())));
-      MarkObject(host, p.load(cage_base()));
+      MarkObject(host, p, p.load(cage_base()));
     }
   }
 
   void VisitCodePointer(HeapObject host, CodeObjectSlot slot) override {
     CHECK(V8_EXTERNAL_CODE_SPACE_BOOL);
-    MarkObject(host, slot.load(code_cage_base()));
+    MarkObject(host, ObjectSlot(slot.address()), slot.load(code_cage_base()));
   }
 
   void VisitPointers(HeapObject host, MaybeObjectSlot start,
@@ -1202,19 +1228,27 @@ class MarkCompactCollector::SharedHeapObjectVisitor final
   }
 
   void VisitCodeTarget(Code host, RelocInfo* rinfo) override {
+#if DEBUG
     Code target = Code::GetCodeFromTargetAddress(rinfo->target_address());
-    MarkObject(host, target);
+    DCHECK(!BasicMemoryChunk::FromHeapObject(target)->InSharedHeap());
+#endif  // DEBUG
   }
+
   void VisitEmbeddedPointer(Code host, RelocInfo* rinfo) override {
-    MarkObject(host, rinfo->target_object(cage_base()));
+#if DEBUG
+    HeapObject target = rinfo->target_object(cage_base());
+    DCHECK(!BasicMemoryChunk::FromHeapObject(target)->InSharedHeap());
+#endif  // DEBUG
   }
 
  private:
-  V8_INLINE void MarkObject(HeapObject host, Object object) {
+  V8_INLINE void MarkObject(HeapObject host, ObjectSlot slot, Object object) {
     DCHECK(!BasicMemoryChunk::FromHeapObject(host)->InSharedHeap());
     if (!object.IsHeapObject()) return;
     HeapObject heap_object = HeapObject::cast(object);
     if (!BasicMemoryChunk::FromHeapObject(heap_object)->InSharedHeap()) return;
+    RememberedSet<CLIENT_TO_SHARED>::Insert<AccessMode::NON_ATOMIC>(
+        MemoryChunk::FromHeapObject(host), slot.address());
     collector_->MarkObject(host, heap_object);
   }
 
@@ -1343,6 +1377,10 @@ class RecordMigratedSlotVisitor : public ObjectVisitorWithCageBases {
     DCHECK(!HasWeakHeapObjectTag(p.load(cage_base())));
     RecordMigratedSlot(host, MaybeObject::FromObject(p.load(cage_base())),
                        p.address());
+  }
+
+  inline void VisitMapPointer(HeapObject host) final {
+    VisitPointer(host, host.map_slot());
   }
 
   inline void VisitPointer(HeapObject host, MaybeObjectSlot p) final {
@@ -1518,10 +1556,19 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
       base->heap_->CopyBlock(dst_addr, src_addr, size);
       if (mode != MigrationMode::kFast)
         base->ExecuteMigrationObservers(dest, src, dst, size);
-      dst.IterateBodyFast(dst.map(cage_base), size, base->record_visitor_);
+      // In case the object's map gets relocated during GC we load the old map
+      // here. This is fine since they store the same content.
+      dst.IterateFast(dst.map(cage_base), size, base->record_visitor_);
       if (V8_UNLIKELY(FLAG_minor_mc)) {
         base->record_visitor_->MarkArrayBufferExtensionPromoted(dst);
       }
+    } else if (dest == MAP_SPACE) {
+      DCHECK_OBJECT_SIZE(size);
+      DCHECK(IsAligned(size, kTaggedSize));
+      base->heap_->CopyBlock(dst_addr, src_addr, size);
+      if (mode != MigrationMode::kFast)
+        base->ExecuteMigrationObservers(dest, src, dst, size);
+      dst.IterateFast(dst.map(cage_base), size, base->record_visitor_);
     } else if (dest == CODE_SPACE) {
       DCHECK_CODEOBJECT_SIZE(size, base->heap_->code_space());
       base->heap_->CopyBlock(dst_addr, src_addr, size);
@@ -1529,7 +1576,9 @@ class EvacuateVisitorBase : public HeapObjectVisitor {
       code.Relocate(dst_addr - src_addr);
       if (mode != MigrationMode::kFast)
         base->ExecuteMigrationObservers(dest, src, dst, size);
-      dst.IterateBodyFast(dst.map(cage_base), size, base->record_visitor_);
+      // In case the object's map gets relocated during GC we load the old map
+      // here. This is fine since they store the same content.
+      dst.IterateFast(dst.map(cage_base), size, base->record_visitor_);
     } else {
       DCHECK_OBJECT_SIZE(size);
       DCHECK(dest == NEW_SPACE);
@@ -1769,7 +1818,7 @@ class EvacuateNewSpacePageVisitor final : public HeapObjectVisitor {
     } else if (mode == NEW_TO_OLD) {
       DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(object));
       PtrComprCageBase cage_base = GetPtrComprCageBase(object);
-      object.IterateBodyFast(cage_base, record_visitor_);
+      object.IterateFast(cage_base, record_visitor_);
       if (V8_UNLIKELY(FLAG_minor_mc)) {
         record_visitor_->MarkArrayBufferExtensionPromoted(object);
       }
@@ -1807,19 +1856,41 @@ class EvacuateOldSpaceVisitor final : public EvacuateVisitorBase {
 
 class EvacuateRecordOnlyVisitor final : public HeapObjectVisitor {
  public:
-  explicit EvacuateRecordOnlyVisitor(Heap* heap) : heap_(heap) {}
+  explicit EvacuateRecordOnlyVisitor(Heap* heap)
+      : heap_(heap)
+#ifdef V8_COMPRESS_POINTERS
+        ,
+        cage_base_(heap->isolate())
+#endif  // V8_COMPRESS_POINTERS
+  {
+  }
+
+  // The pointer compression cage base value used for decompression of all
+  // tagged values except references to Code objects.
+  V8_INLINE PtrComprCageBase cage_base() const {
+#ifdef V8_COMPRESS_POINTERS
+    return cage_base_;
+#else
+    return PtrComprCageBase{};
+#endif  // V8_COMPRESS_POINTERS
+  }
 
   inline bool Visit(HeapObject object, int size) override {
     RecordMigratedSlotVisitor visitor(heap_->mark_compact_collector(),
                                       &heap_->ephemeron_remembered_set_);
-    DCHECK_IMPLIES(V8_EXTERNAL_CODE_SPACE_BOOL, !IsCodeSpaceObject(object));
-    PtrComprCageBase cage_base = GetPtrComprCageBase(object);
-    object.IterateBodyFast(cage_base, &visitor);
+    Map map = object.map(cage_base());
+    // Instead of calling object.IterateBodyFast(cage_base(), &visitor) here
+    // we can shortcut and use the precomputed size value passed to the visitor.
+    DCHECK_EQ(object.SizeFromMap(map), size);
+    object.IterateBodyFast(map, size, &visitor);
     return true;
   }
 
  private:
   Heap* heap_;
+#ifdef V8_COMPRESS_POINTERS
+  const PtrComprCageBase cage_base_;
+#endif  // V8_COMPRESS_POINTERS
 };
 
 bool MarkCompactCollector::IsUnmarkedHeapObject(Heap* heap, FullObjectSlot p) {
@@ -1920,7 +1991,7 @@ bool MarkCompactCollector::ProcessEphemeronsUntilFixpoint() {
   } while (another_ephemeron_iteration_main_thread ||
            heap()->concurrent_marking()->another_ephemeron_iteration() ||
            !local_marking_worklists()->IsEmpty() ||
-           !local_marking_worklists()->IsEmbedderEmpty() ||
+           !local_marking_worklists()->IsWrapperEmpty() ||
            !heap()->local_embedder_heap_tracer()->IsRemoteTracingDone());
 
   CHECK(local_marking_worklists()->IsEmpty());
@@ -2042,7 +2113,7 @@ void MarkCompactCollector::ProcessEphemeronsLinear() {
     // is necessary.
 
     work_to_do = !local_marking_worklists()->IsEmpty() ||
-                 !local_marking_worklists()->IsEmbedderEmpty() ||
+                 !local_marking_worklists()->IsWrapperEmpty() ||
                  !heap()->local_embedder_heap_tracer()->IsRemoteTracingDone();
     CHECK(local_weak_objects()
               ->discovered_ephemerons_local.IsLocalAndGlobalEmpty());
@@ -2063,11 +2134,14 @@ void MarkCompactCollector::ProcessEphemeronsLinear() {
 void MarkCompactCollector::PerformWrapperTracing() {
   if (heap_->local_embedder_heap_tracer()->InUse()) {
     TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_EMBEDDER_TRACING);
-    {
+    if (local_marking_worklists()->PublishWrapper()) {
+      DCHECK(local_marking_worklists()->IsWrapperEmpty());
+    } else {
+      // Cannot directly publish wrapper objects.
       LocalEmbedderHeapTracer::ProcessingScope scope(
           heap_->local_embedder_heap_tracer());
       HeapObject object;
-      while (local_marking_worklists()->PopEmbedder(&object)) {
+      while (local_marking_worklists()->PopWrapper(&object)) {
         scope.TracePossibleWrapper(JSObject::cast(object));
       }
     }
@@ -2292,8 +2366,8 @@ void MarkCompactCollector::MarkLiveObjects() {
         PerformWrapperTracing();
         DrainMarkingWorklist();
       } while (!heap_->local_embedder_heap_tracer()->IsRemoteTracingDone() ||
-               !local_marking_worklists()->IsEmbedderEmpty());
-      DCHECK(local_marking_worklists()->IsEmbedderEmpty());
+               !local_marking_worklists()->IsWrapperEmpty());
+      DCHECK(local_marking_worklists()->IsWrapperEmpty());
       DCHECK(local_marking_worklists()->IsEmpty());
     }
 
@@ -2336,7 +2410,7 @@ void MarkCompactCollector::MarkLiveObjects() {
     {
       TRACE_GC(heap()->tracer(), GCTracer::Scope::MC_MARK_WEAK_CLOSURE_HARMONY);
       ProcessEphemeronMarking();
-      DCHECK(local_marking_worklists()->IsEmbedderEmpty());
+      DCHECK(local_marking_worklists()->IsWrapperEmpty());
       DCHECK(local_marking_worklists()->IsEmpty());
     }
 
@@ -2413,6 +2487,14 @@ void MarkCompactCollector::ClearNonLiveReferences() {
   PROFILE(heap()->isolate(), WeakCodeClearEvent());
 
   MarkDependentCodeForDeoptimization();
+
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
+  {
+    TRACE_GC(heap()->tracer(),
+             GCTracer::Scope::MC_SWEEP_EXTERNAL_POINTER_TABLE);
+    isolate()->external_pointer_table().Sweep(isolate());
+  }
+#endif  // V8_SANDBOXED_EXTERNAL_POINTERS
 
   DCHECK(weak_objects_.transition_arrays.IsEmpty());
   DCHECK(weak_objects_.weak_references.IsEmpty());
@@ -2927,53 +3009,76 @@ bool MarkCompactCollector::IsOnEvacuationCandidate(MaybeObject obj) {
   return Page::FromAddress(obj.ptr())->IsEvacuationCandidate();
 }
 
+// static
+bool MarkCompactCollector::ShouldRecordRelocSlot(Code host, RelocInfo* rinfo,
+                                                 HeapObject target) {
+  MemoryChunk* source_chunk = MemoryChunk::FromHeapObject(host);
+  BasicMemoryChunk* target_chunk = BasicMemoryChunk::FromHeapObject(target);
+  return target_chunk->IsEvacuationCandidate() &&
+         !source_chunk->ShouldSkipEvacuationSlotRecording();
+}
+
+// static
 MarkCompactCollector::RecordRelocSlotInfo
-MarkCompactCollector::PrepareRecordRelocSlot(Code host, RelocInfo* rinfo,
-                                             HeapObject target) {
+MarkCompactCollector::ProcessRelocInfo(Code host, RelocInfo* rinfo,
+                                       HeapObject target) {
+  DCHECK_EQ(host, rinfo->host());
+
   RecordRelocSlotInfo result;
-  result.should_record = false;
-  Page* target_page = Page::FromHeapObject(target);
-  Page* source_page = Page::FromHeapObject(host);
-  if (target_page->IsEvacuationCandidate() &&
-      (rinfo->host().is_null() ||
-       !source_page->ShouldSkipEvacuationSlotRecording())) {
-    RelocInfo::Mode rmode = rinfo->rmode();
-    Address addr = rinfo->pc();
-    SlotType slot_type = SlotTypeForRelocInfoMode(rmode);
-    if (rinfo->IsInConstantPool()) {
-      addr = rinfo->constant_pool_entry_address();
-      if (RelocInfo::IsCodeTargetMode(rmode)) {
-        slot_type = CODE_ENTRY_SLOT;
-      } else if (RelocInfo::IsCompressedEmbeddedObject(rmode)) {
-        slot_type = COMPRESSED_OBJECT_SLOT;
-      } else {
-        DCHECK(RelocInfo::IsFullEmbeddedObject(rmode));
-        slot_type = FULL_OBJECT_SLOT;
-      }
+  const RelocInfo::Mode rmode = rinfo->rmode();
+  Address addr;
+  SlotType slot_type;
+
+  if (rinfo->IsInConstantPool()) {
+    addr = rinfo->constant_pool_entry_address();
+
+    if (RelocInfo::IsCodeTargetMode(rmode)) {
+      slot_type = SlotType::kConstPoolCodeEntry;
+    } else if (RelocInfo::IsCompressedEmbeddedObject(rmode)) {
+      slot_type = SlotType::kConstPoolEmbeddedObjectCompressed;
+    } else {
+      DCHECK(RelocInfo::IsFullEmbeddedObject(rmode));
+      slot_type = SlotType::kConstPoolEmbeddedObjectFull;
     }
-    uintptr_t offset = addr - source_page->address();
-    DCHECK_LT(offset, static_cast<uintptr_t>(TypedSlotSet::kMaxOffset));
-    result.should_record = true;
-    result.memory_chunk = source_page;
-    result.slot_type = slot_type;
-    result.offset = static_cast<uint32_t>(offset);
+  } else {
+    addr = rinfo->pc();
+
+    if (RelocInfo::IsCodeTargetMode(rmode)) {
+      slot_type = SlotType::kCodeEntry;
+    } else if (RelocInfo::IsFullEmbeddedObject(rmode)) {
+      slot_type = SlotType::kEmbeddedObjectFull;
+    } else if (RelocInfo::IsCompressedEmbeddedObject(rmode)) {
+      slot_type = SlotType::kEmbeddedObjectCompressed;
+    } else {
+      DCHECK(RelocInfo::IsDataEmbeddedObject(rmode));
+      slot_type = SlotType::kEmbeddedObjectData;
+    }
   }
+
+  MemoryChunk* const source_chunk = MemoryChunk::FromHeapObject(host);
+  const uintptr_t offset = addr - source_chunk->address();
+  DCHECK_LT(offset, static_cast<uintptr_t>(TypedSlotSet::kMaxOffset));
+  result.memory_chunk = source_chunk;
+  result.slot_type = slot_type;
+  result.offset = static_cast<uint32_t>(offset);
+
   return result;
 }
 
+// static
 void MarkCompactCollector::RecordRelocSlot(Code host, RelocInfo* rinfo,
                                            HeapObject target) {
-  RecordRelocSlotInfo info = PrepareRecordRelocSlot(host, rinfo, target);
-  if (info.should_record) {
-    // Access to TypeSlots need to be protected, since LocalHeaps might
-    // publish code in the background thread.
-    base::Optional<base::MutexGuard> opt_guard;
-    if (FLAG_concurrent_sparkplug) {
-      opt_guard.emplace(info.memory_chunk->mutex());
-    }
-    RememberedSet<OLD_TO_OLD>::InsertTyped(info.memory_chunk, info.slot_type,
-                                           info.offset);
+  if (!ShouldRecordRelocSlot(host, rinfo, target)) return;
+  RecordRelocSlotInfo info = ProcessRelocInfo(host, rinfo, target);
+
+  // Access to TypeSlots need to be protected, since LocalHeaps might
+  // publish code in the background thread.
+  base::Optional<base::MutexGuard> opt_guard;
+  if (FLAG_concurrent_sparkplug) {
+    opt_guard.emplace(info.memory_chunk->mutex());
   }
+  RememberedSet<OLD_TO_OLD>::InsertTyped(info.memory_chunk, info.slot_type,
+                                         info.offset);
 }
 
 namespace {
@@ -3049,14 +3154,17 @@ static inline SlotCallbackResult UpdateSlot(PtrComprCageBase cage_base,
     typename TSlot::TObject target = MakeSlotValue<TSlot, reference_type>(
         map_word.ToForwardingAddress(host_cage_base));
     if (access_mode == AccessMode::NON_ATOMIC) {
-      slot.store(target);
+      // Needs to be atomic for map space compaction: This slot could be a map
+      // word which we update while loading the map word for updating the slot
+      // on another page.
+      slot.Relaxed_Store(target);
     } else {
       slot.Release_CompareAndSwap(old, target);
     }
     DCHECK(!Heap::InFromPage(target));
     DCHECK(!MarkCompactCollector::IsOnEvacuationCandidate(target));
   } else {
-    DCHECK(heap_obj.map(cage_base).IsMap(cage_base));
+    DCHECK(MarkCompactCollector::IsMapOrForwardedMap(map_word.ToMap()));
   }
   // OLD_TO_OLD slots are always removed after updating.
   return REMOVE_SLOT;
@@ -3106,7 +3214,7 @@ static inline SlotCallbackResult UpdateStrongCodeSlot(
         CodeDataContainer::cast(HeapObject::FromAddress(
             slot.address() - CodeDataContainer::kCodeOffset));
     Code code = code_data_container.code(code_cage_base);
-    Isolate* isolate_for_sandbox = GetIsolateForHeapSandbox(host);
+    Isolate* isolate_for_sandbox = GetIsolateForSandbox(host);
     code_data_container.UpdateCodeEntryPoint(isolate_for_sandbox, code);
     return result;
   }
@@ -3115,11 +3223,8 @@ static inline SlotCallbackResult UpdateStrongCodeSlot(
 
 }  // namespace
 
-static constexpr bool kClientHeap = true;
-
 // Visitor for updating root pointers and to-space pointers.
 // It does not expect to encounter pointers to dead objects.
-template <bool in_client_heap = false>
 class PointersUpdatingVisitor final : public ObjectVisitorWithCageBases,
                                       public RootVisitor {
  public:
@@ -3175,34 +3280,14 @@ class PointersUpdatingVisitor final : public ObjectVisitorWithCageBases,
     }
   }
 
-  void VisitMapPointer(HeapObject object) override {
-    if (in_client_heap) {
-      UpdateStrongSlotInternal(cage_base(), object.map_slot());
-    } else {
-      UNREACHABLE();
-    }
-  }
-
   void VisitCodeTarget(Code host, RelocInfo* rinfo) override {
-    if (in_client_heap) {
-      Code target = Code::GetCodeFromTargetAddress(rinfo->target_address());
-      CHECK_WITH_MSG(!target.InSharedHeap(),
-                     "refs into shared heap not yet supported here.");
-    } else {
-      // This visitor nevers visits code objects.
-      UNREACHABLE();
-    }
+    // This visitor nevers visits code objects.
+    UNREACHABLE();
   }
 
   void VisitEmbeddedPointer(Code host, RelocInfo* rinfo) override {
-    if (in_client_heap) {
-      HeapObject target = rinfo->target_object(cage_base());
-      CHECK_WITH_MSG(!target.InSharedHeap(),
-                     "refs into shared heap not yet supported here.");
-    } else {
-      // This visitor nevers visits code objects.
-      UNREACHABLE();
-    }
+    // This visitor nevers visits code objects.
+    UNREACHABLE();
   }
 
  private:
@@ -3231,6 +3316,71 @@ class PointersUpdatingVisitor final : public ObjectVisitorWithCageBases,
     return UpdateSlot<AccessMode::NON_ATOMIC>(cage_base, slot);
   }
 };
+
+#ifdef VERIFY_HEAP
+// Visitor for updating root pointers and to-space pointers.
+// It does not expect to encounter pointers to dead objects.
+class ClientHeapVerifier final : public ObjectVisitorWithCageBases {
+ public:
+  explicit ClientHeapVerifier(Heap* heap) : ObjectVisitorWithCageBases(heap) {}
+
+  void VisitPointer(HeapObject host, ObjectSlot p) override {
+    VerifySlot(cage_base(), p);
+  }
+
+  void VisitPointer(HeapObject host, MaybeObjectSlot p) override {
+    VerifySlot(cage_base(), p);
+  }
+
+  void VisitPointers(HeapObject host, ObjectSlot start,
+                     ObjectSlot end) override {
+    for (ObjectSlot p = start; p < end; ++p) {
+      VerifySlot(cage_base(), p);
+    }
+  }
+
+  void VisitPointers(HeapObject host, MaybeObjectSlot start,
+                     MaybeObjectSlot end) final {
+    for (MaybeObjectSlot p = start; p < end; ++p) {
+      VerifySlot(cage_base(), p);
+    }
+  }
+
+  void VisitMapPointer(HeapObject host) override {
+    VerifySlot(cage_base(), host.map_slot());
+  }
+
+  void VisitCodePointer(HeapObject host, CodeObjectSlot slot) override {
+    VerifySlot(code_cage_base(), ObjectSlot(slot.address()));
+  }
+
+  void VisitCodeTarget(Code host, RelocInfo* rinfo) override {}
+
+  void VisitEmbeddedPointer(Code host, RelocInfo* rinfo) override {}
+
+ private:
+  void VerifySlot(PtrComprCageBase cage_base, ObjectSlot slot) {
+    HeapObject heap_object;
+    if (slot.load(cage_base).GetHeapObject(&heap_object)) {
+      VerifyHeapObject(heap_object);
+    }
+  }
+
+  void VerifySlot(PtrComprCageBase cage_base, MaybeObjectSlot slot) {
+    HeapObject heap_object;
+    if (slot.load(cage_base).GetHeapObject(&heap_object)) {
+      VerifyHeapObject(heap_object);
+    }
+  }
+
+  void VerifyHeapObject(HeapObject heap_object) {
+    if (BasicMemoryChunk::FromHeapObject(heap_object)->InReadOnlySpace())
+      return;
+    if (!heap_object.InSharedHeap()) return;
+    CHECK(!heap_object.map_word(kRelaxedLoad).IsForwardingAddress());
+  }
+};
+#endif  // VERIFY_HEAP
 
 static String UpdateReferenceInExternalStringTableEntry(Heap* heap,
                                                         FullObjectSlot p) {
@@ -3306,6 +3456,7 @@ void MarkCompactCollector::EvacuateEpilogue() {
   // Old-to-old slot sets must be empty after evacuation.
   for (Page* p : *heap()->old_space()) {
     DCHECK_NULL((p->slot_set<OLD_TO_OLD, AccessMode::ATOMIC>()));
+    DCHECK_NULL((p->slot_set<CLIENT_TO_SHARED, AccessMode::NON_ATOMIC>()));
     DCHECK_NULL((p->typed_slot_set<OLD_TO_OLD, AccessMode::ATOMIC>()));
     DCHECK_NULL(p->invalidated_slots<OLD_TO_OLD>());
     DCHECK_NULL(p->invalidated_slots<OLD_TO_NEW>());
@@ -4037,7 +4188,7 @@ class ToSpaceUpdatingItem : public UpdatingItem {
   void ProcessVisitAll() {
     TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("v8.gc"),
                  "ToSpaceUpdatingItem::ProcessVisitAll");
-    PointersUpdatingVisitor<> visitor(heap_);
+    PointersUpdatingVisitor visitor(heap_);
     for (Address cur = start_; cur < end_;) {
       HeapObject object = HeapObject::FromAddress(cur);
       Map map = object.map(visitor.cage_base());
@@ -4052,7 +4203,7 @@ class ToSpaceUpdatingItem : public UpdatingItem {
                  "ToSpaceUpdatingItem::ProcessVisitLive");
     // For young generation evacuations we want to visit grey objects, for
     // full MC, we need to visit black objects.
-    PointersUpdatingVisitor<> visitor(heap_);
+    PointersUpdatingVisitor visitor(heap_);
     for (auto object_and_size : LiveObjectRange<kAllLiveObjects>(
              chunk_, marking_state_->bitmap(chunk_))) {
       object_and_size.first.IterateBodyFast(visitor.cage_base(), &visitor);
@@ -4380,7 +4531,7 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
     TRACE_GC(heap()->tracer(),
              GCTracer::Scope::MC_EVACUATE_UPDATE_POINTERS_TO_NEW_ROOTS);
     // The external string table is updated at the end.
-    PointersUpdatingVisitor<> updating_visitor(heap());
+    PointersUpdatingVisitor updating_visitor(heap());
     heap_->IterateRootsIncludingClients(
         &updating_visitor,
         base::EnumSet<SkipRoot>{SkipRoot::kExternalStringTable});
@@ -4440,18 +4591,38 @@ void MarkCompactCollector::UpdatePointersAfterEvacuation() {
 void MarkCompactCollector::UpdatePointersInClientHeaps() {
   if (!isolate()->is_shared()) return;
 
-  PointersUpdatingVisitor<kClientHeap> visitor(heap());
-
   isolate()->global_safepoint()->IterateClientIsolates(
-      [&visitor](Isolate* client) {
-        Heap* heap = client->heap();
-        HeapObjectIterator iterator(heap, HeapObjectIterator::kNoFiltering);
-        PtrComprCageBase cage_base(client);
-        for (HeapObject obj = iterator.Next(); !obj.is_null();
-             obj = iterator.Next()) {
-          obj.IterateFast(cage_base, &visitor);
-        }
-      });
+      [this](Isolate* client) { UpdatePointersInClientHeap(client); });
+}
+
+void MarkCompactCollector::UpdatePointersInClientHeap(Isolate* client) {
+  PtrComprCageBase cage_base(client);
+  MemoryChunkIterator chunk_iterator(client->heap());
+
+  while (chunk_iterator.HasNext()) {
+    MemoryChunk* chunk = chunk_iterator.Next();
+    RememberedSet<CLIENT_TO_SHARED>::Iterate(
+        chunk,
+        [cage_base](MaybeObjectSlot slot) {
+          return UpdateSlot<AccessMode::NON_ATOMIC>(cage_base, slot);
+        },
+        SlotSet::KEEP_EMPTY_BUCKETS);
+
+    chunk->ReleaseSlotSet<CLIENT_TO_SHARED>();
+  }
+
+#ifdef VERIFY_HEAP
+  if (FLAG_verify_heap) {
+    ClientHeapVerifier verifier_visitor(client->heap());
+
+    HeapObjectIterator iterator(client->heap(),
+                                HeapObjectIterator::kNoFiltering);
+    for (HeapObject obj = iterator.Next(); !obj.is_null();
+         obj = iterator.Next()) {
+      obj.IterateFast(cage_base, &verifier_visitor);
+    }
+  }
+#endif  // VERIFY_HEAP
 }
 
 void MarkCompactCollector::ReportAbortedEvacuationCandidateDueToOOM(
@@ -4962,7 +5133,7 @@ void MinorMarkCompactCollector::UpdatePointersAfterEvacuation() {
   TRACE_GC(heap()->tracer(),
            GCTracer::Scope::MINOR_MC_EVACUATE_UPDATE_POINTERS);
 
-  PointersUpdatingVisitor<> updating_visitor(heap());
+  PointersUpdatingVisitor updating_visitor(heap());
   std::vector<std::unique_ptr<UpdatingItem>> updating_items;
 
   // Create batches of global handles.

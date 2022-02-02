@@ -7,7 +7,6 @@
 
 #include <atomic>
 #include <cmath>
-#include <map>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -135,7 +134,10 @@ enum class AllocationOrigin {
   kNumberOfAllocationOrigins = kLastAllocationOrigin + 1
 };
 
-enum class GarbageCollectionReason {
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused. If you add new items here, update
+// src/tools/metrics/histograms/enums.xml in chromium.
+enum class GarbageCollectionReason : int {
   kUnknown = 0,
   kAllocationFailure = 1,
   kAllocationLimit = 2,
@@ -162,10 +164,13 @@ enum class GarbageCollectionReason {
   kGlobalAllocationLimit = 23,
   kMeasureMemory = 24,
   kBackgroundAllocationFailure = 25,
-  // If you add new items here, then update the incremental_marking_reason,
-  // mark_compact_reason, and scavenge_reason counters in counters.h.
-  // Also update src/tools/metrics/histograms/enums.xml in chromium.
+
+  kLastReason = kBackgroundAllocationFailure,
 };
+
+static_assert(kGarbageCollectionReasonMaxValue ==
+                  static_cast<int>(GarbageCollectionReason::kLastReason),
+              "The value of kGarbageCollectionReasonMaxValue is inconsistent.");
 
 enum class YoungGenerationHandling {
   kRegularScavenge = 0,
@@ -264,8 +269,6 @@ struct CommentStatistic {
 using EphemeronRememberedSet =
     std::unordered_map<EphemeronHashTable, std::unordered_set<int>,
                        Object::Hasher>;
-
-using CollectionEpoch = uint32_t;
 
 class Heap {
  public:
@@ -544,8 +547,6 @@ class Heap {
   void NotifyBootstrapComplete();
 
   void NotifyOldGenerationExpansion(AllocationSpace space, MemoryChunk* chunk);
-
-  void UpdateCurrentEpoch(GarbageCollector collector);
 
   inline Address* NewSpaceAllocationTopAddress();
   inline Address* NewSpaceAllocationLimitAddress();
@@ -926,9 +927,14 @@ class Heap {
     return array_buffer_sweeper_.get();
   }
 
+  // The potentially overreserved address space region reserved by the code
+  // range if it exists or empty region otherwise.
   const base::AddressRegion& code_region();
 
   CodeRange* code_range() { return code_range_.get(); }
+
+  // The base of the code range if it exists or null address.
+  inline Address code_range_base();
 
   LocalHeap* main_thread_local_heap() { return main_thread_local_heap_; }
 
@@ -1667,11 +1673,6 @@ class Heap {
 
   static Isolate* GetIsolateFromWritableObject(HeapObject object);
 
-  CollectionEpoch epoch_young() { return epoch_young_; }
-  CollectionEpoch epoch_full() { return epoch_full_; }
-
-  void UpdateEpochFull();
-
   // Ensure that we have swept all spaces in such a way that we can iterate
   // over all objects.
   void MakeHeapIterable();
@@ -1811,7 +1812,8 @@ class Heap {
   // Performs garbage collection in a safepoint.
   // Returns the number of freed global handles.
   size_t PerformGarbageCollection(
-      GarbageCollector collector,
+      GarbageCollector collector, GarbageCollectionReason gc_reason,
+      const char* collector_reason,
       const GCCallbackFlags gc_callback_flags = kNoGCCallbackFlags);
 
   // Performs garbage collection in the shared heap.
@@ -2179,6 +2181,8 @@ class Heap {
     return allocation_type_for_in_place_internalizable_strings_;
   }
 
+  bool IsStressingScavenge();
+
   ExternalMemoryAccounting external_memory_;
 
   // This can be calculated directly from a pointer to the heap; however, it is
@@ -2284,10 +2288,10 @@ class Heap {
 
   // Starts marking when stress_marking_percentage_% of the marking start limit
   // is reached.
-  int stress_marking_percentage_ = 0;
+  std::atomic<int> stress_marking_percentage_{0};
 
-  // Observer that causes more frequent checks for reached incremental marking
-  // limit.
+  // Observer that causes more frequent checks for reached incremental
+  // marking limit.
   AllocationObserver* stress_marking_observer_ = nullptr;
 
   // Observer that can cause early scavenge start.
@@ -2508,11 +2512,6 @@ class Heap {
   bool is_finalization_registry_cleanup_task_posted_ = false;
 
   std::unique_ptr<third_party_heap::Heap> tp_heap_;
-
-  // We need two epochs, since there can be scavenges during incremental
-  // marking.
-  CollectionEpoch epoch_young_ = 0;
-  CollectionEpoch epoch_full_ = 0;
 
   // Classes in "heap" can be friends.
   friend class AlwaysAllocateScope;

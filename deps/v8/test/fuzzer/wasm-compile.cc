@@ -622,7 +622,7 @@ class WasmGenerator {
     uint8_t random_byte = data->get<uint8_t>();
     int func_index = random_byte % functions_.size();
     uint32_t sig_index = functions_[func_index];
-    FunctionSig* sig = builder_->builder()->GetSignature(sig_index);
+    const FunctionSig* sig = builder_->builder()->GetSignature(sig_index);
     // Generate arguments.
     for (size_t i = 0; i < sig->parameter_count(); ++i) {
       Generate(sig->GetParam(i), data);
@@ -808,7 +808,8 @@ class WasmGenerator {
                              control_depth - catch_blocks_[catch_index]);
     } else {
       int tag = data->get<uint8_t>() % builder_->builder()->NumExceptions();
-      FunctionSig* exception_sig = builder_->builder()->GetExceptionType(tag);
+      const FunctionSig* exception_sig =
+          builder_->builder()->GetExceptionType(tag);
       base::Vector<const ValueType> exception_types(
           exception_sig->parameters().begin(),
           exception_sig->parameter_count());
@@ -853,7 +854,7 @@ class WasmGenerator {
     bool new_default = data->get<bool>();
 
     if (builder_->builder()->IsStructType(index)) {
-      StructType* struct_gen = builder_->builder()->GetStructType(index);
+      const StructType* struct_gen = builder_->builder()->GetStructType(index);
       int field_count = struct_gen->field_count();
       bool can_be_defaultable = false;
 
@@ -1143,7 +1144,7 @@ class WasmGenerator {
     if (num_structs_ > 0) {
       int struct_index = data->get<uint8_t>() % num_structs_;
       DCHECK(builder->IsStructType(struct_index));
-      StructType* struct_type = builder->GetStructType(struct_index);
+      const StructType* struct_type = builder->GetStructType(struct_index);
       ZoneVector<uint32_t> field_indices(builder->zone());
       for (uint32_t i = 0; i < struct_type->field_count(); i++) {
         if (struct_type->mutability(i)) {
@@ -1253,7 +1254,7 @@ class WasmGenerator {
         num_structs_(num_structs),
         num_arrays_(num_arrays),
         liftoff_as_reference_(liftoff_as_reference) {
-    FunctionSig* sig = fn->signature();
+    const FunctionSig* sig = fn->signature();
     blocks_.emplace_back();
     for (size_t i = 0; i < sig->return_count(); ++i) {
       blocks_.back().push_back(sig->GetReturn(i));
@@ -2138,6 +2139,20 @@ void WasmGenerator::GenerateRef(HeapType type, DataRange* data,
       }
       return;
     }
+    case HeapType::kArray: {
+      DCHECK(liftoff_as_reference_);
+      constexpr uint8_t fallback_to_dataref = 1;
+      uint8_t random =
+          data->get<uint8_t>() % (num_arrays_ + fallback_to_dataref);
+      // Try generating one of the alternatives and continue to the rest of the
+      // methods in case it fails.
+      if (random >= num_arrays_) {
+        if (GenerateOneOf(alternatives_other, type, data, nullability)) return;
+        random = data->get<uint8_t>() % num_arrays_;
+      }
+      GenerateRef(HeapType(random), data, nullability);
+      return;
+    }
     case HeapType::kData: {
       DCHECK(liftoff_as_reference_);
       constexpr uint8_t fallback_to_dataref = 2;
@@ -2494,7 +2509,7 @@ class WasmCompileFuzzer : public WasmExecutionFuzzer {
     // have typed-function tables.
     std::vector<WasmFunctionBuilder*> functions;
     for (int i = 0; i < num_functions; ++i) {
-      FunctionSig* sig = builder.GetSignature(function_signatures[i]);
+      const FunctionSig* sig = builder.GetSignature(function_signatures[i]);
       functions.push_back(builder.AddFunction(sig));
     }
 
@@ -2562,7 +2577,7 @@ class WasmCompileFuzzer : public WasmExecutionFuzzer {
       WasmGenerator gen(f, function_signatures, globals, mutable_globals,
                         num_structs, num_arrays, &function_range,
                         liftoff_as_reference);
-      FunctionSig* sig = f->signature();
+      const FunctionSig* sig = f->signature();
       base::Vector<const ValueType> return_types(sig->returns().begin(),
                                                  sig->return_count());
       gen.Generate(return_types, &function_range);
@@ -2572,8 +2587,6 @@ class WasmCompileFuzzer : public WasmExecutionFuzzer {
     }
 
     builder.SetMaxMemorySize(32);
-    // We enable shared memory to be able to test atomics.
-    builder.SetHasSharedMemory();
     builder.WriteTo(buffer);
     return true;
   }
@@ -2581,7 +2594,6 @@ class WasmCompileFuzzer : public WasmExecutionFuzzer {
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   constexpr bool require_valid = true;
-  EXPERIMENTAL_FLAG_SCOPE(reftypes);
   EXPERIMENTAL_FLAG_SCOPE(typed_funcref);
   EXPERIMENTAL_FLAG_SCOPE(gc);
   EXPERIMENTAL_FLAG_SCOPE(simd);

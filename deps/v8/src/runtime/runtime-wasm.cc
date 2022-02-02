@@ -57,8 +57,13 @@ class FrameFinder {
   StackFrameIterator frame_iterator_;
 };
 
-WasmInstanceObject GetWasmInstanceOnStackTop(Isolate* isolate) {
-  return FrameFinder<WasmFrame>(isolate).frame()->wasm_instance();
+WasmInstanceObject GetWasmInstanceOnStackTop(
+    Isolate* isolate,
+    std::initializer_list<StackFrame::Type> skipped_frame_types = {
+        StackFrame::EXIT}) {
+  return FrameFinder<WasmFrame>(isolate, skipped_frame_types)
+      .frame()
+      ->wasm_instance();
 }
 
 Context GetNativeContextFromWasmInstanceOnStackTop(Isolate* isolate) {
@@ -231,7 +236,7 @@ RUNTIME_FUNCTION(Runtime_WasmCompileLazy) {
 
 namespace {
 void ReplaceWrapper(Isolate* isolate, Handle<WasmInstanceObject> instance,
-                    int function_index, Handle<Code> wrapper_code) {
+                    int function_index, Handle<CodeT> wrapper_code) {
   Handle<WasmInternalFunction> internal =
       WasmInstanceObject::GetWasmInternalFunction(isolate, instance,
                                                   function_index)
@@ -269,9 +274,10 @@ RUNTIME_FUNCTION(Runtime_WasmCompileWrapper) {
     return ReadOnlyRoots(isolate).undefined_value();
   }
 
-  Handle<Code> wrapper_code =
+  Handle<CodeT> wrapper_code = ToCodeT(
       wasm::JSToWasmWrapperCompilationUnit::CompileSpecificJSToWasmWrapper(
-          isolate, sig, module);
+          isolate, sig, module),
+      isolate);
 
   // Replace the wrapper for the function that triggered the tier-up.
   // This is to verify that the wrapper is replaced, even if the function
@@ -633,19 +639,6 @@ RUNTIME_FUNCTION(Runtime_WasmDebugBreak) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
-RUNTIME_FUNCTION(Runtime_WasmAllocateRtt) {
-  ClearThreadInWasmScope flag_scope(isolate);
-  HandleScope scope(isolate);
-  DCHECK_EQ(3, args.length());
-  CONVERT_UINT32_ARG_CHECKED(type_index, 0);
-  CONVERT_ARG_HANDLE_CHECKED(Map, parent, 1);
-  CONVERT_SMI_ARG_CHECKED(raw_mode, 2);
-  Handle<WasmInstanceObject> instance(GetWasmInstanceOnStackTop(isolate),
-                                      isolate);
-  return *wasm::AllocateSubRtt(isolate, instance, type_index, parent,
-                               static_cast<WasmRttSubMode>(raw_mode));
-}
-
 namespace {
 inline void* ArrayElementAddress(Handle<WasmArray> array, uint32_t index,
                                  int element_size_bytes) {
@@ -694,6 +687,37 @@ RUNTIME_FUNCTION(Runtime_WasmArrayCopy) {
   return ReadOnlyRoots(isolate).undefined_value();
 }
 
+// Returns
+// - the new array if the operation succeeds,
+// - Smi(0) if the requested array length is too large,
+// - Smi(1) if the data segment ran out-of-bounds.
+RUNTIME_FUNCTION(Runtime_WasmArrayInitFromData) {
+  ClearThreadInWasmScope flag_scope(isolate);
+  HandleScope scope(isolate);
+  DCHECK_EQ(5, args.length());
+  CONVERT_ARG_HANDLE_CHECKED(WasmInstanceObject, instance, 0);
+  CONVERT_UINT32_ARG_CHECKED(data_segment, 1);
+  CONVERT_UINT32_ARG_CHECKED(offset, 2);
+  CONVERT_UINT32_ARG_CHECKED(length, 3);
+  CONVERT_ARG_HANDLE_CHECKED(Map, rtt, 4);
+  uint32_t element_size = WasmArray::DecodeElementSizeFromMap(*rtt);
+  uint32_t length_in_bytes = length * element_size;
+
+  if (length > static_cast<uint32_t>(WasmArray::MaxLength(element_size))) {
+    return Smi::FromInt(wasm::kArrayInitFromDataArrayTooLargeErrorCode);
+  }
+  // The check above implies no overflow.
+  DCHECK_EQ(length_in_bytes / element_size, length);
+  if (!base::IsInBounds<uint32_t>(
+          offset, length_in_bytes,
+          instance->data_segment_sizes()[data_segment])) {
+    return Smi::FromInt(wasm::kArrayInitFromDataSegmentOutOfBoundsErrorCode);
+  }
+
+  Address source = instance->data_segment_starts()[data_segment] + offset;
+  return *isolate->factory()->NewWasmArrayFromMemory(length, rtt, source);
+}
+
 namespace {
 // Synchronize the stack limit with the active continuation for stack-switching.
 // This can be done before or after changing the stack pointer itself, as long
@@ -713,19 +737,36 @@ void SyncStackLimit(Isolate* isolate) {
 }  // namespace
 
 // Allocate a new continuation, and prepare for stack switching by updating the
-// active continuation and setting the stack limit.
+// active continuation, active suspender and stack limit.
 RUNTIME_FUNCTION(Runtime_WasmAllocateContinuation) {
   CHECK(FLAG_experimental_wasm_stack_switching);
   HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(WasmSuspenderObject, suspender, 0);
+
+  // Update the continuation state.
   auto parent =
       handle(WasmContinuationObject::cast(
                  *isolate->roots_table().slot(RootIndex::kActiveContinuation)),
              isolate);
-  auto target = WasmContinuationObject::New(isolate, *parent);
+  Handle<WasmContinuationObject> target =
+      WasmContinuationObject::New(isolate, *parent);
   auto target_stack =
       Managed<wasm::StackMemory>::cast(target->stack()).get().get();
   isolate->wasm_stacks()->Add(target_stack);
   isolate->roots_table().slot(RootIndex::kActiveContinuation).store(*target);
+
+  // Update the suspender state.
+  FullObjectSlot active_suspender_slot =
+      isolate->roots_table().slot(RootIndex::kActiveSuspender);
+  suspender->set_parent(HeapObject::cast(*active_suspender_slot));
+  if (!(*active_suspender_slot).IsUndefined()) {
+    WasmSuspenderObject::cast(*active_suspender_slot)
+        .set_state(WasmSuspenderObject::Inactive);
+  }
+  suspender->set_state(WasmSuspenderObject::State::Active);
+  suspender->set_continuation(*target);
+  active_suspender_slot.store(*suspender);
+
   SyncStackLimit(isolate);
   return *target;
 }
@@ -735,6 +776,43 @@ RUNTIME_FUNCTION(Runtime_WasmSyncStackLimit) {
   CHECK(FLAG_experimental_wasm_stack_switching);
   SyncStackLimit(isolate);
   return ReadOnlyRoots(isolate).undefined_value();
+}
+
+// Takes a promise and a suspender, and returns promise.then(onFulfilled), where
+// onFulfilled resumes the suspender.
+RUNTIME_FUNCTION(Runtime_WasmCreateResumePromise) {
+  CHECK(FLAG_experimental_wasm_stack_switching);
+  HandleScope scope(isolate);
+  CONVERT_ARG_HANDLE_CHECKED(Object, promise, 0);
+  CONVERT_ARG_HANDLE_CHECKED(WasmSuspenderObject, suspender, 1);
+
+  // Instantiate onFulfilled callback.
+  Handle<WasmOnFulfilledData> function_data =
+      isolate->factory()->NewWasmOnFulfilledData(suspender);
+  Handle<SharedFunctionInfo> shared =
+      isolate->factory()->NewSharedFunctionInfoForWasmOnFulfilled(
+          function_data);
+  Handle<WasmInstanceObject> instance(
+      GetWasmInstanceOnStackTop(isolate,
+                                {StackFrame::EXIT, StackFrame::WASM_TO_JS}),
+      isolate);
+  isolate->set_context(instance->native_context());
+  Handle<Context> context(isolate->native_context());
+  Handle<Map> function_map = isolate->strict_function_map();
+  Handle<JSObject> on_fulfilled =
+      Factory::JSFunctionBuilder{isolate, shared, context}
+          .set_map(function_map)
+          .Build();
+
+  i::Handle<i::Object> argv[] = {on_fulfilled};
+  i::Handle<i::Object> result;
+  bool has_pending_exception =
+      !i::Execution::CallBuiltin(isolate, isolate->promise_then(), promise,
+                                 arraysize(argv), argv)
+           .ToHandle(&result);
+  // TODO(thibaudm): Propagate exception.
+  CHECK(!has_pending_exception);
+  return *result;
 }
 
 }  // namespace internal

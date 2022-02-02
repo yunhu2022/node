@@ -167,6 +167,8 @@ void Sweeper::StartSweeping() {
     // pages to be swept in order to move those objects).
     // Since maps don't move, there is no need to sort the pages from MAP_SPACE
     // before sweeping them.
+    // We sort in descending order of live bytes, i.e., ascending order of free
+    // bytes, because GetSweepingPageSafe returns pages in reverse order.
     if (space != MAP_SPACE) {
       int space_index = GetSweepSpaceIndex(space);
       std::sort(
@@ -385,7 +387,8 @@ int Sweeper::RawSweep(
           &old_to_new_cleanup);
     }
     Map map = object.map(cage_base, kAcquireLoad);
-    DCHECK(map.IsMap(cage_base));
+    // Map might be forwarded during GC.
+    DCHECK(MarkCompactCollector::IsMapOrForwardedMap(map));
     int size = object.SizeFromMap(map);
     live_bytes += size;
     free_start = free_end + size;

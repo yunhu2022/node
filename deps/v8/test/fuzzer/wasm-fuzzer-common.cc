@@ -231,6 +231,8 @@ std::string ValueTypeToConstantName(ValueType type) {
           return "kWasmAnyRef";
         case HeapType::kData:
           return "wasmOptRefType(kWasmDataRef)";
+        case HeapType::kArray:
+          return "wasmOptRefType(kWasmArrayRef)";
         case HeapType::kI31:
           return "wasmOptRefType(kWasmI31Ref)";
         case HeapType::kBottom:
@@ -249,6 +251,8 @@ std::string ValueTypeToConstantName(ValueType type) {
           return "wasmRefType(kWasmAnyRef)";
         case HeapType::kData:
           return "wasmRefType(kWasmDataRef)";
+        case HeapType::kArray:
+          return "wasmRefType(kWasmArrayRef)";
         case HeapType::kI31:
           return "wasmRefType(kWasmI31Ref)";
         case HeapType::kBottom:
@@ -272,6 +276,8 @@ std::string HeapTypeToConstantName(HeapType heap_type) {
       return "kWasmI31Ref";
     case HeapType::kData:
       return "kWasmDataRef";
+    case HeapType::kArray:
+      return "kWasmArrayRef";
     case HeapType::kAny:
       return "kWasmAnyRef";
     case HeapType::kBottom:
@@ -296,22 +302,6 @@ struct PrintName {
 };
 std::ostream& operator<<(std::ostream& os, const PrintName& name) {
   return os.write(name.name.begin(), name.name.size());
-}
-
-std::ostream& operator<<(std::ostream& os, WasmElemSegment::Entry entry) {
-  os << "WasmInitExpr.";
-  switch (entry.kind) {
-    case WasmElemSegment::Entry::kGlobalGetEntry:
-      os << "GlobalGet(" << entry.index;
-      break;
-    case WasmElemSegment::Entry::kRefFuncEntry:
-      os << "RefFunc(" << entry.index;
-      break;
-    case WasmElemSegment::Entry::kRefNullEntry:
-      os << "RefNull(" << HeapType(entry.index).name().c_str();
-      break;
-  }
-  return os << ")";
 }
 
 // An interface for WasmFullDecoder used to decode initializer expressions. As
@@ -418,14 +408,17 @@ class InitExprInterface {
                                 : WasmInitExpr::ArrayInit(imm.index, args);
   }
 
-  void RttCanon(FullDecoder* decoder, uint32_t type_index, Value* result) {
-    result->init_expr = WasmInitExpr::RttCanon(type_index);
+  void ArrayInitFromData(FullDecoder* decoder,
+                         const ArrayIndexImmediate<validate>& array_imm,
+                         const IndexImmediate<validate>& data_segment_imm,
+                         const Value& offset_value, const Value& length_value,
+                         const Value& rtt, Value* result) {
+    // TODO(7748): Implement.
+    UNIMPLEMENTED();
   }
 
-  void RttSub(FullDecoder* decoder, uint32_t type_index, const Value& parent,
-              Value* result, WasmRttSubMode mode) {
-    result->init_expr =
-        WasmInitExpr::RttSub(zone_, type_index, parent.init_expr);
+  void RttCanon(FullDecoder* decoder, uint32_t type_index, Value* result) {
+    result->init_expr = WasmInitExpr::RttCanon(type_index);
   }
 
   void DoReturn(FullDecoder* decoder, uint32_t /*drop_values*/) {
@@ -505,14 +498,6 @@ void AppendInitExpr(std::ostream& os, const WasmInitExpr& expr) {
     case WasmInitExpr::kRttCanon:
       os << "RttCanon(" << expr.immediate().index;
       break;
-    case WasmInitExpr::kRttSub:
-      os << "RttSub(" << expr.immediate().index << ", ";
-      AppendInitExpr(os, (*expr.operands())[0]);
-      break;
-    case WasmInitExpr::kRttFreshSub:
-      os << "RttFreshSub(" << expr.immediate().index << ", ";
-      AppendInitExpr(os, (*expr.operands())[0]);
-      break;
   }
 
   if (append_operands) {
@@ -529,18 +514,36 @@ void AppendInitExpr(std::ostream& os, const WasmInitExpr& expr) {
 
 void DecodeAndAppendInitExpr(StdoutStream& os, Zone* zone,
                              const WasmModule* module,
-                             ModuleWireBytes module_bytes, WireBytesRef init,
-                             ValueType expected) {
-  FunctionBody body(FunctionSig::Build(zone, {expected}, {}), init.offset(),
-                    module_bytes.start() + init.offset(),
-                    module_bytes.start() + init.end_offset());
-  WasmFeatures detected;
-  WasmFullDecoder<Decoder::kFullValidation, InitExprInterface, kInitExpression>
-      decoder(zone, module, WasmFeatures::All(), &detected, body, zone);
+                             ModuleWireBytes module_bytes,
+                             ConstantExpression init, ValueType expected) {
+  switch (init.kind()) {
+    case ConstantExpression::kEmpty:
+      UNREACHABLE();
+    case ConstantExpression::kI32Const:
+      AppendInitExpr(os, WasmInitExpr(init.i32_value()));
+      break;
+    case ConstantExpression::kRefNull:
+      AppendInitExpr(os, WasmInitExpr::RefNullConst(init.repr()));
+      break;
+    case ConstantExpression::kRefFunc:
+      AppendInitExpr(os, WasmInitExpr::RefFuncConst(init.index()));
+      break;
+    case ConstantExpression::kWireBytesRef: {
+      WireBytesRef ref = init.wire_bytes_ref();
+      auto sig = FixedSizeSignature<ValueType>::Returns(expected);
+      FunctionBody body(&sig, ref.offset(), module_bytes.start() + ref.offset(),
+                        module_bytes.start() + ref.end_offset());
+      WasmFeatures detected;
+      WasmFullDecoder<Decoder::kFullValidation, InitExprInterface,
+                      kInitExpression>
+          decoder(zone, module, WasmFeatures::All(), &detected, body, zone);
 
-  decoder.DecodeFunctionBody();
+      decoder.DecodeFunctionBody();
 
-  AppendInitExpr(os, decoder.interface().result());
+      AppendInitExpr(os, decoder.interface().result());
+      break;
+    }
+  }
 }
 }  // namespace
 
@@ -606,13 +609,6 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
     os << ");\n";
   }
 
-#if DEBUG
-  for (uint8_t kind : module->type_kinds) {
-    DCHECK(kWasmArrayTypeCode == kind || kWasmStructTypeCode == kind ||
-           kWasmFunctionTypeCode == kind);
-  }
-#endif
-
   for (int i = 0; i < static_cast<int>(module->types.size()); i++) {
     if (module->has_struct(i)) {
       const StructType* struct_type = module->types[i].struct_type;
@@ -664,10 +660,19 @@ void GenerateTestCase(Isolate* isolate, ModuleWireBytes wire_bytes,
     }
     os << "[";
     for (uint32_t i = 0; i < elem_segment.entries.size(); i++) {
-      os << elem_segment.entries[i];
+      if (elem_segment.element_type == WasmElemSegment::kExpressionElements) {
+        DecodeAndAppendInitExpr(os, &zone, module, wire_bytes,
+                                elem_segment.entries[i], elem_segment.type);
+      } else {
+        os << elem_segment.entries[i].index();
+      }
       if (i < elem_segment.entries.size() - 1) os << ", ";
     }
-    os << "], " << ValueTypeToConstantName(elem_segment.type) << ");\n";
+    os << "], "
+       << (elem_segment.element_type == WasmElemSegment::kExpressionElements
+               ? ValueTypeToConstantName(elem_segment.type)
+               : "undefined")
+       << ");\n";
   }
 
   for (const WasmTag& tag : module->tags) {
@@ -794,12 +799,15 @@ void WasmExecutionFuzzer::FuzzWasmModule(base::Vector<const uint8_t> data,
   // Control whether Liftoff or the interpreter will be used as the reference
   // tier.
   // TODO(thibaudm): Port nondeterminism detection to arm.
-#if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_X86)
-  bool liftoff_as_reference = configuration_byte & 1;
-#else
+  /* TODO(manoskouk): Temporarily disable liftoff-as-reference, i.e., wasm-gc
+     fuzzing until we update the fuzzer to isorecursive types.
+  #if defined(V8_TARGET_ARCH_X64) || defined(V8_TARGET_ARCH_X86)
+    bool liftoff_as_reference = configuration_byte & 1;
+  #else
+    bool liftoff_as_reference = false;
+  #endif
+  */
   bool liftoff_as_reference = false;
-#endif
-
   FlagScope<bool> turbo_mid_tier_regalloc(&FLAG_turbo_force_mid_tier_regalloc,
                                           configuration_byte == 0);
 

@@ -43,11 +43,76 @@
   ##############################################################################
   # Temporal tests to be implemented
   # https://crbug.com/v8/11544
-  'temporal/plain*': [FAIL],
-  'temporal/duration*': [FAIL],
-  'temporal/calendar*': [FAIL],
-  'temporal/zoned*': [FAIL],
-  'temporal/instant*': [FAIL],
+  'temporal/calendar-date-add': [FAIL],
+  'temporal/calendar-date-from-fields': [FAIL],
+  'temporal/calendar-date-until': [FAIL],
+  'temporal/calendar-day': [FAIL],
+  'temporal/calendar-day-of-week': [FAIL],
+  'temporal/calendar-day-of-year': [FAIL],
+  'temporal/calendar-days-in-month': [FAIL],
+  'temporal/calendar-days-in-week': [FAIL],
+  'temporal/calendar-days-in-year': [FAIL],
+  'temporal/calendar-fields': [FAIL],
+  'temporal/calendar-from': [FAIL],
+  'temporal/calendar-in-leap-year': [FAIL],
+  'temporal/calendar-merge-fields': [FAIL],
+  'temporal/calendar-month': [FAIL],
+  'temporal/calendar-month-code': [FAIL],
+  'temporal/calendar-month-day-from-fields': [FAIL],
+  'temporal/calendar-months-in-year': [FAIL],
+  'temporal/calendar-week-of-year': [FAIL],
+  'temporal/calendar-year': [FAIL],
+  'temporal/calendar-year-month-from-fields': [FAIL],
+  'temporal/duration-abs': [FAIL],
+  'temporal/duration-add': [FAIL],
+  'temporal/duration-from': [FAIL],
+  'temporal/duration-negated': [FAIL],
+  'temporal/duration-to-json': [FAIL],
+  'temporal/duration-with': [FAIL],
+  'temporal/instant-add': [FAIL],
+  'temporal/instant-compare': [FAIL],
+  'temporal/instant-constructor': [FAIL],
+  'temporal/instant-equals': [FAIL],
+  'temporal/instant-from-epoch-microseconds': [FAIL],
+  'temporal/instant-from-epoch-milliseconds': [FAIL],
+  'temporal/instant-from-epoch-nanoseconds': [FAIL],
+  'temporal/instant-from-epoch-seconds': [FAIL],
+  'temporal/instant-subtract': [FAIL],
+  'temporal/instant-to-json': [FAIL],
+  'temporal/instant-toJSON': [FAIL],
+  'temporal/instant-valueOf': [FAIL],
+  'temporal/plain-date-add': [FAIL],
+  'temporal/plain-date-compare': [FAIL],
+  'temporal/plain-date-equals': [FAIL],
+  'temporal/plain-date-from': [FAIL],
+  'temporal/plain-date-time-add': [FAIL],
+  'temporal/plain-date-time-compare': [FAIL],
+  'temporal/plain-date-time-equals': [FAIL],
+  'temporal/plain-date-time-from': [FAIL],
+  'temporal/plain-date-time-get-hour': [FAIL],
+  'temporal/plain-date-time-get-microsecond': [FAIL],
+  'temporal/plain-date-time-get-millisecond': [FAIL],
+  'temporal/plain-date-time-get-minute': [FAIL],
+  'temporal/plain-date-time-get-nanosecond': [FAIL],
+  'temporal/plain-date-time-get-second': [FAIL],
+  'temporal/plain-date-time-subtract': [FAIL],
+  'temporal/plain-date-time-to-json': [FAIL],
+  'temporal/plain-date-time-to-plain-date': [FAIL],
+  'temporal/plain-date-time-to-plain-month-day': [FAIL],
+  'temporal/plain-date-time-to-plain-time': [FAIL],
+  'temporal/plain-date-time-to-plain-year-month': [FAIL],
+  'temporal/plain-date-time-valueOf': [FAIL],
+  'temporal/plain-date-time-with': [FAIL],
+  'temporal/plain-date-time-with-calendar': [FAIL],
+  'temporal/plain-date-time-with-plain-date': [FAIL],
+  'temporal/plain-date-time-with-plain-time': [FAIL],
+  'temporal/plain-date-to-json': [FAIL],
+  'temporal/plain-date-to-plain-date-time': [FAIL],
+  'temporal/plain-date-to-plain-month-day': [FAIL],
+  'temporal/plain-date-to-plain-year-month': [FAIL],
+  'temporal/plain-date-valueOf': [FAIL],
+  'temporal/plain-date-with': [FAIL],
+  'temporal/plain-date-with-calendar': [FAIL],
 
   ##############################################################################
   # Open bugs.
@@ -86,6 +151,10 @@
 
   # https://crbug.com/v8/10948
   'wasm/atomics': [PASS, ['arch == arm and not simulator_run', SKIP]],
+
+  # crbug.com/v8/12472 Stack overflow during regexp node generation.
+  'regress/regress-crbug-595657': [SKIP],
+  'regress/regress-475705': [SKIP],
 
   ##############################################################################
   # Tests where variants make no sense.
@@ -307,8 +376,6 @@
   'regress/regress-1122': [SKIP],
   'regress/regress-331444': [SKIP],
   'regress/regress-353551': [SKIP],
-  'regress/regress-1138075': [SKIP],
-  'regress/regress-1138611': [SKIP],
   'regress/regress-crbug-119926': [SKIP],
   'regress/short-circuit': [SKIP],
   'stack-traces-overflow': [SKIP],
@@ -365,6 +432,9 @@
 
   # BUG(v8:11240)
   'regress/regress-v8-9267-1': [SKIP],
+
+  # BUG(v8:12561)
+  'spread-large-map': [SKIP],
 }],  # 'gc_stress'
 
 ##############################################################################
@@ -449,6 +519,13 @@
 
   # Temporal intl tests won't work in no_i18n
   'temporal/function-exist': [FAIL],
+  'temporal/plain-date-get-era': [FAIL],
+  'temporal/plain-date-get-eraYear': [FAIL],
+  'temporal/plain-date-time-get-era': [FAIL],
+  'temporal/plain-date-time-get-eraYear': [FAIL],
+
+  # Non-BMP characters currently aren't considered identifiers in no_i18n
+  'harmony/private-name-surrogate-pair': [PASS,FAIL],
 }],  # 'no_i18n'
 
 ##############################################################################
@@ -874,10 +951,6 @@
   # This often fails in debug mode because it is too slow
   'd8/d8-performance-now': [PASS, ['mode == debug', SKIP]],
 
-  # https://github.com/v8-riscv/v8/issues/418
-  'regress/regress-1138075': [SKIP],
-  'regress/regress-1138611': [SKIP],
-
   # SIMD not be implemented
   'regress/wasm/regress-1054466': [SKIP],
   'regress/wasm/regress-1065599': [SKIP],
@@ -897,7 +970,6 @@
   'regress/wasm/regress-1199662': [SKIP],
   'regress/wasm/regress-1231950': [SKIP],
   'regress/wasm/regress-1264462': [SKIP],
-  'regress/regress-1172797': [SKIP],
   'regress/wasm/regress-1179025': [SKIP],
   'wasm/multi-value-simd': [SKIP],
   'wasm/liftoff-simd-params': [SKIP],
@@ -983,6 +1055,11 @@
   # multiple isolates, as dynamic tiering relies on a array shared
   # in the module, that can be modified by all instances.
   'wasm/wasm-dynamic-tiering': [SKIP],
+
+  # The test relies on precise switching of code kinds of wasm functions. With
+  # multiple isolates that share the wasm functions, the precise switching is
+  # not possible.
+  'wasm/serialization-with-compilation-hints': [SKIP],
 
   # waitAsync tests modify the global state (across Isolates)
   'harmony/atomics-waitasync': [SKIP],
@@ -1303,9 +1380,9 @@
 }], # arch not in (x64, ia32, arm64, arm, s390x, ppc64, mipsel, mips64el, loong64)
 
 ##############################################################################
-['system != linux or virtual_memory_cage == True', {
+['system != linux or sandbox == True', {
   # Multi-mapped mock allocator is only available on Linux, and only if the
-  # virtual memory cage is not enabled.
+  # sandbox is not enabled.
   'regress/regress-crbug-1041232': [SKIP],
   'regress/regress-crbug-1104608': [SKIP],
 }],
@@ -1431,6 +1508,8 @@
   # stress-concurrent-allocation reverts the pretenuring decision due to low
   # survival rate in old generation.
   'compiler/deopt-pretenure': [SKIP],
+  # BUG(v8:9506): slow tests.
+  'wasm/shared-memory-worker-gc-stress': [SKIP],
 }],  # variant == stress_concurrent_allocation
 
 ##############################################################################
@@ -1462,6 +1541,15 @@
   'regress/wasm/regress-1242300': [SKIP],
   'regress/wasm/regress-1242689': [SKIP],
   'regress/wasm/regress-1264462': [SKIP],
+  'regress/wasm/regress-1271244': [SKIP],
+  'regress/wasm/regress-1271538': [SKIP],
+  'regress/wasm/regress-1282224': [SKIP],
+  'regress/wasm/regress-1283042': [SKIP],
+  'regress/wasm/regress-1284980': [SKIP],
+  'regress/wasm/regress-1286253': [SKIP],
+  'regress/wasm/regress-1283395': [SKIP],
+  'regress/wasm/regress-1289678': [SKIP],
+  'regress/wasm/regress-1290079': [SKIP],
 }],  # no_simd_hardware == True
 
 ##############################################################################
@@ -1503,6 +1591,7 @@
   'compiler/test-literal-map-migration': [SKIP],
   'compiler/deopt-pretenure': [SKIP],
   'compiler/fast-api-sequences-x64': [SKIP],
+  'compiler/regress-store-store-elim': [SKIP],
 
   # TODO(v8:12031): Reimplement elements kinds transitions when concurrent
   # inlining.
@@ -1711,5 +1800,10 @@
   'tzoffset-transition-lord-howe': [FAIL],
   'tzoffset-transition-moscow': [FAIL],
 }], # variant == google3_nociu
+
+# Tests that cannot run without JS shared memory
+['no_js_shared_memory', {
+  'shared-memory/*': [SKIP],
+}],  # 'no_js_shared_memory'
 
 ]

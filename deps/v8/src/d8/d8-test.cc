@@ -65,10 +65,10 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     } else {
-      options.fallback = 0;
+      options.fallback = false;
     }
 
     return static_cast<double>(arg_i32) + static_cast<double>(arg_u32) +
@@ -143,13 +143,13 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
 
     uint32_t length = seq_arg->Length();
     if (length > 1024) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
 
@@ -157,7 +157,7 @@ class FastCApiObject {
     bool result = TryToCopyAndConvertArrayToCppBuffer<
         CTypeInfoBuilder<Type>::Build().GetId(), Type>(seq_arg, buffer, 1024);
     if (!result) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
     DCHECK_EQ(seq_arg->Length(), length);
@@ -288,7 +288,7 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
 
@@ -385,7 +385,7 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
 
@@ -444,7 +444,7 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return 0;
     }
 
@@ -504,7 +504,7 @@ class FastCApiObject {
     self->fast_call_count_++;
 
     if (should_fallback) {
-      options.fallback = 1;
+      options.fallback = true;
       return false;
     }
 

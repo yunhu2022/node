@@ -52,6 +52,7 @@
 #include "src/objects/js-promise.h"
 #include "src/objects/js-regexp-inl.h"
 #include "src/objects/js-regexp-string-iterator.h"
+#include "src/objects/js-shadow-realms.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-relative-time-format.h"
 #include "src/objects/js-segment-iterator.h"
@@ -2334,6 +2335,8 @@ int JSObject::GetHeaderSize(InstanceType type,
       return JSObject::kHeaderSize;
     case JS_ERROR_TYPE:
       return JSObject::kHeaderSize;
+    case JS_SHADOW_REALM_TYPE:
+      return JSShadowRealm::kHeaderSize;
     case JS_STRING_ITERATOR_TYPE:
       return JSStringIterator::kHeaderSize;
     case JS_MODULE_NAMESPACE_TYPE:
@@ -5244,7 +5247,7 @@ Maybe<bool> JSObject::HasRealNamedCallbackProperty(Handle<JSObject> object,
                                : Nothing<bool>();
 }
 
-bool JSObject::IsApiWrapper() {
+bool JSObject::IsApiWrapper() const {
   // These object types can carry information relevant for embedders. The
   // *_API_* types are generated through templates which can have embedder
   // fields. The other types have their embedder fields added at compile time.
@@ -5258,7 +5261,7 @@ bool JSObject::IsApiWrapper() {
          InstanceTypeChecker::IsJSApiObject(instance_type);
 }
 
-bool JSObject::IsDroppableApiWrapper() {
+bool JSObject::IsDroppableApiWrapper() const {
   auto instance_type = map().instance_type();
   return InstanceTypeChecker::IsJSApiObject(instance_type) ||
          instance_type == JS_SPECIAL_API_OBJECT_TYPE;

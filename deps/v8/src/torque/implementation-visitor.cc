@@ -605,12 +605,11 @@ void ImplementationVisitor::Visit(Builtin* builtin) {
                       "Int32T>(argc)));\n";
       csa_ccfile() << "  TNode<RawPtrT> arguments_frame = "
                       "UncheckedCast<RawPtrT>(LoadFramePointer());\n";
-      csa_ccfile() << "  TorqueStructArguments "
-                      "torque_arguments(GetFrameArguments(arguments_frame, "
-                      "arguments_length, (kJSArgcIncludesReceiver ? "
-                      "FrameArgumentsArgcType::kCountIncludesReceiver : "
-                      "FrameArgumentsArgcType::kCountExcludesReceiver)"
-                   << "));\n";
+      csa_ccfile()
+          << "  TorqueStructArguments "
+             "torque_arguments(GetFrameArguments(arguments_frame, "
+             "arguments_length, FrameArgumentsArgcType::kCountIncludesReceiver"
+          << "));\n";
       csa_ccfile()
           << "  CodeStubArguments arguments(this, torque_arguments);\n";
 
@@ -4748,21 +4747,22 @@ void ImplementationVisitor::GenerateClassDefinitions(
         factory_impl << ");\n";
         factory_impl << "  Map map = factory()->read_only_roots()."
                      << SnakeifyString(type->name()) << "_map();";
-        factory_impl << "  HeapObject result =\n";
+        factory_impl << "  HeapObject raw_object =\n";
         factory_impl << "    factory()->AllocateRawWithImmortalMap(size, "
                         "allocation_type, map);\n";
+        factory_impl << "  " << type->UnhandlifiedCppTypeName()
+                     << " result = " << type->UnhandlifiedCppTypeName()
+                     << "::cast(raw_object);\n";
+        factory_impl << "  DisallowGarbageCollection no_gc;";
         factory_impl << "  WriteBarrierMode write_barrier_mode =\n"
                      << "     allocation_type == AllocationType::kYoung\n"
                      << "     ? SKIP_WRITE_BARRIER : UPDATE_WRITE_BARRIER;\n"
                      << "  USE(write_barrier_mode);\n";
-        factory_impl << "  " << type->HandlifiedCppTypeName()
-                     << " result_handle(" << type->name()
-                     << "::cast(result), factory()->isolate());\n";
 
         for (const Field& f : type->ComputeAllFields()) {
           if (f.name_and_type.name == "map") continue;
           if (!f.index) {
-            factory_impl << "  result_handle->TorqueGeneratedClass::set_"
+            factory_impl << "  result.TorqueGeneratedClass::set_"
                          << SnakeifyString(f.name_and_type.name) << "(";
             if (f.name_and_type.type->IsSubtypeOf(
                     TypeOracle::GetTaggedType()) &&
@@ -4776,7 +4776,7 @@ void ImplementationVisitor::GenerateClassDefinitions(
           }
         }
 
-        factory_impl << "  return result_handle;\n";
+        factory_impl << "  return handle(result, factory()->isolate());\n";
         factory_impl << "}\n\n";
 
         factory_impl << "template EXPORT_TEMPLATE_DEFINE(V8_EXPORT_PRIVATE) "

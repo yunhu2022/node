@@ -654,7 +654,7 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
   let values;
   let rab;
   let detachAfter;
-  function CollectValuesAndResize(n) {
+  function CollectValuesAndDetach(n) {
     if (typeof n == 'bigint') {
       values.push(Number(n));
     } else {
@@ -668,19 +668,19 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
 
   function ForEachHelper(array) {
     values = [];
-    array.forEach(CollectValuesAndResize);
+    array.forEach(CollectValuesAndDetach);
     return values;
   }
 
   function ReduceHelper(array) {
     values = [];
-    array.reduce((acc, n) => { CollectValuesAndResize(n); }, "initial value");
+    array.reduce((acc, n) => { CollectValuesAndDetach(n); }, "initial value");
     return values;
   }
 
   function ReduceRightHelper(array) {
     values = [];
-    array.reduceRight((acc, n) => { CollectValuesAndResize(n); },
+    array.reduceRight((acc, n) => { CollectValuesAndDetach(n); },
                       "initial value");
     return values;
   }
@@ -803,5 +803,325 @@ d8.file.execute('test/mjsunit/typedarray-helpers.js');
     assertTrue(IncludesHelper(fixedLength, 0));
     // The TA is detached so it includes only "undefined".
     assertFalse(IncludesHelper(fixedLength, 0, evil));
+  }
+})();
+
+(function IndexOfParameterConversionDetaches() {
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let evil = { valueOf: () => {
+      %ArrayBufferDetach(rab);
+      return 0;
+    }};
+    assertEquals(0, IndexOfHelper(lengthTracking, 0));
+    // The buffer is detached so indexOf returns -1.
+    assertEquals(-1, IndexOfHelper(lengthTracking, 0, evil));
+  }
+
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let evil = { valueOf: () => {
+      %ArrayBufferDetach(rab);
+      return 0;
+    }};
+    assertEquals(0, IndexOfHelper(lengthTracking, 0));
+    // The buffer is detached so indexOf returns -1, also for undefined).
+    assertEquals(-1, IndexOfHelper(lengthTracking, undefined, evil));
+  }
+})();
+
+(function LastIndexOfParameterConversionDetaches() {
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let evil = { valueOf: () => {
+      %ArrayBufferDetach(rab);
+      return 2;
+    }};
+    assertEquals(3, LastIndexOfHelper(lengthTracking, 0));
+    // The buffer is detached so lastIndexOf returns -1.
+    assertEquals(-1, LastIndexOfHelper(lengthTracking, 0, evil));
+  }
+
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let evil = { valueOf: () => {
+      %ArrayBufferDetach(rab);
+      return 2;
+    }};
+    assertEquals(3, LastIndexOfHelper(lengthTracking, 0));
+    // The buffer is detached so lastIndexOf returns -1, also for undefined).
+    assertEquals(-1, LastIndexOfHelper(lengthTracking, undefined, evil));
+  }
+})();
+
+(function JoinToLocaleString() {
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const fixedLength = new ctor(rab, 0, 4);
+    const fixedLengthWithOffset = new ctor(rab, 2 * ctor.BYTES_PER_ELEMENT, 2);
+    const lengthTracking = new ctor(rab, 0);
+    const lengthTrackingWithOffset = new ctor(rab, 2 * ctor.BYTES_PER_ELEMENT);
+
+    %ArrayBufferDetach(rab);
+
+    assertThrows(() => { fixedLength.join(); });
+    assertThrows(() => { fixedLength.toLocaleString(); });
+    assertThrows(() => { fixedLengthWithOffset.join(); });
+    assertThrows(() => { fixedLengthWithOffset.toLocaleString(); });
+    assertThrows(() => { lengthTracking.join(); });
+    assertThrows(() => { lengthTracking.toLocaleString(); });
+    assertThrows(() => { lengthTrackingWithOffset.join(); });
+    assertThrows(() => { lengthTrackingWithOffset.toLocaleString(); });
+ }
+})();
+
+(function JoinParameterConversionDetaches() {
+  // Detaching + fixed-length TA.
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const fixedLength = new ctor(rab, 0, 4);
+
+    let evil = { toString: () => {
+      %ArrayBufferDetach(rab);
+      return '.';
+    }};
+    // We iterate 4 elements, since it was the starting length, but the TA is
+    // OOB right after parameter conversion, so all elements are converted to
+    // the empty string.
+    assertEquals('...', fixedLength.join(evil));
+  }
+
+  // Detaching + length-tracking TA.
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let evil = { toString: () => {
+      %ArrayBufferDetach(rab);
+      return '.';
+    }};
+    // We iterate 4 elements, since it was the starting length, but the TA is
+    // OOB right after parameter conversion, so all elements are converted to
+    // the empty string.
+    assertEquals('...', lengthTracking.join(evil));
+  }
+})();
+
+(function ToLocaleStringNumberPrototypeToLocaleStringDetaches() {
+  const oldNumberPrototypeToLocaleString = Number.prototype.toLocaleString;
+  const oldBigIntPrototypeToLocaleString = BigInt.prototype.toLocaleString;
+
+  // Detaching + fixed-length TA.
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const fixedLength = new ctor(rab, 0, 4);
+
+    let detachAfter = 2;
+    Number.prototype.toLocaleString = function() {
+      --detachAfter;
+      if (detachAfter == 0) {
+        %ArrayBufferDetach(rab);
+      }
+      return oldNumberPrototypeToLocaleString.call(this);
+    }
+    BigInt.prototype.toLocaleString = function() {
+      --detachAfter;
+      if (detachAfter == 0) {
+        %ArrayBufferDetach(rab);
+      }
+      return oldBigIntPrototypeToLocaleString.call(this);
+    }
+
+    // We iterate 4 elements, since it was the starting length. The TA goes
+    // OOB after 2 elements.
+    assertEquals('0,0,,', fixedLength.toLocaleString());
+  }
+
+  // Detaching + length-tracking TA.
+  for (let ctor of ctors) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    const lengthTracking = new ctor(rab);
+
+    let detachAfter = 2;
+    Number.prototype.toLocaleString = function() {
+      --detachAfter;
+      if (detachAfter == 0) {
+        %ArrayBufferDetach(rab);
+      }
+      return oldNumberPrototypeToLocaleString.call(this);
+    }
+    BigInt.prototype.toLocaleString = function() {
+      --detachAfter;
+      if (detachAfter == 0) {
+        %ArrayBufferDetach(rab);
+      }
+      return oldBigIntPrototypeToLocaleString.call(this);
+    }
+
+    // We iterate 4 elements, since it was the starting length. The TA goes
+    // OOB after 2 elements.
+    assertEquals('0,0,,', lengthTracking.toLocaleString());
+  }
+
+  Number.prototype.toLocaleString = oldNumberPrototypeToLocaleString;
+  BigInt.prototype.toLocaleString = oldBigIntPrototypeToLocaleString;
+})();
+
+(function MapDetachMidIteration() {
+  // Orig. array: [0, 2, 4, 6]
+  //              [0, 2, 4, 6] << fixedLength
+  //                    [4, 6] << fixedLengthWithOffset
+  //              [0, 2, 4, 6, ...] << lengthTracking
+  //                    [4, 6, ...] << lengthTrackingWithOffset
+  function CreateRabForTest(ctor) {
+    const rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                           8 * ctor.BYTES_PER_ELEMENT);
+    // Write some data into the array.
+    const taWrite = new ctor(rab);
+    for (let i = 0; i < 4; ++i) {
+      WriteToTypedArray(taWrite, i, 2 * i);
+    }
+    return rab;
+  }
+
+  let values;
+  let rab;
+  let detachAfter;
+  function CollectValuesAndDetach(n, ix, ta) {
+    if (typeof n == 'bigint') {
+      values.push(Number(n));
+    } else {
+      values.push(n);
+    }
+    if (values.length == detachAfter) {
+      %ArrayBufferDetach(rab);
+    }
+    // We still need to return a valid BigInt / non-BigInt, even if
+    // n is `undefined`.
+    if (IsBigIntTypedArray(ta)) {
+      return 0n;
+    } else {
+      return 0;
+    }
+  }
+
+  function Helper(array) {
+    values = [];
+    array.map(CollectValuesAndDetach);
+    return values;
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateRabForTest(ctor);
+    const fixedLength = new ctor(rab, 0, 4);
+    detachAfter = 2;
+    assertEquals([0, 2, undefined, undefined], Helper(fixedLength));
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateRabForTest(ctor);
+    const fixedLengthWithOffset = new ctor(rab, 2 * ctor.BYTES_PER_ELEMENT, 2);
+    detachAfter = 1;
+    assertEquals([4, undefined], Helper(fixedLengthWithOffset));
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateRabForTest(ctor);
+    const lengthTracking = new ctor(rab, 0);
+    detachAfter = 2;
+    assertEquals([0, 2, undefined, undefined], Helper(lengthTracking));
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateRabForTest(ctor);
+    const lengthTrackingWithOffset = new ctor(rab, 2 * ctor.BYTES_PER_ELEMENT);
+    detachAfter = 1;
+    assertEquals([4, undefined], Helper(lengthTrackingWithOffset));
+  }
+})();
+
+(function MapSpeciesCreateDetaches() {
+  let values;
+  let rab;
+  function CollectValues(n, ix, ta) {
+    if (typeof n == 'bigint') {
+      values.push(Number(n));
+    } else {
+      values.push(n);
+    }
+    // We still need to return a valid BigInt / non-BigInt, even if
+    // n is `undefined`.
+    if (IsBigIntTypedArray(ta)) {
+      return 0n;
+    }
+    return 0;
+  }
+
+  function Helper(array) {
+    values = [];
+    array.map(CollectValues);
+    return values;
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                     8 * ctor.BYTES_PER_ELEMENT);
+
+    let detachWhenConstructorCalled = false;
+    class MyArray extends ctor {
+      constructor(...params) {
+        super(...params);
+        if (detachWhenConstructorCalled) {
+          %ArrayBufferDetach(rab);
+        }
+      }
+    };
+
+    const fixedLength = new MyArray(rab, 0, 4);
+    detachWhenConstructorCalled = true;
+    assertEquals([undefined, undefined, undefined, undefined],
+                 Helper(fixedLength));
+  }
+
+  for (let ctor of ctors) {
+    rab = CreateResizableArrayBuffer(4 * ctor.BYTES_PER_ELEMENT,
+                                     8 * ctor.BYTES_PER_ELEMENT);
+
+    const taWrite = new ctor(rab);
+    for (let i = 0; i < 4; ++i) {
+      WriteToTypedArray(taWrite, i, i);
+    }
+
+    let detachWhenConstructorCalled = false;
+    class MyArray extends ctor {
+      constructor(...params) {
+        super(...params);
+        if (detachWhenConstructorCalled) {
+          %ArrayBufferDetach(rab);
+        }
+      }
+    };
+
+    const lengthTracking = new MyArray(rab);
+    detachWhenConstructorCalled = true;
+    assertEquals([undefined, undefined, undefined, undefined],
+                 Helper(lengthTracking));
   }
 })();

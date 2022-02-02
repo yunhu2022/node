@@ -106,7 +106,6 @@ inline void Load(LiftoffAssembler* assm, LiftoffRegister dst, MemOperand src,
     case kRef:
     case kOptRef:
     case kRtt:
-    case kRttWithDepth:
       assm->Ld(dst.gp(), src);
       break;
     case kF32:
@@ -134,7 +133,6 @@ inline void Store(LiftoffAssembler* assm, Register base, int32_t offset,
     case kOptRef:
     case kRef:
     case kRtt:
-    case kRttWithDepth:
       assm->Usd(src.gp(), dst);
       break;
     case kF32:
@@ -750,7 +748,6 @@ void LiftoffAssembler::Spill(int offset, LiftoffRegister reg, ValueKind kind) {
     case kRef:
     case kOptRef:
     case kRtt:
-    case kRttWithDepth:
       Sd(reg.gp(), dst);
       break;
     case kF32:
@@ -1077,7 +1074,7 @@ I64_SHIFTOP_I(shr, dsrl)
 #undef I64_SHIFTOP
 #undef I64_SHIFTOP_I
 
-void LiftoffAssembler::emit_u32_to_intptr(Register dst, Register src) {
+void LiftoffAssembler::emit_u32_to_uintptr(Register dst, Register src) {
   Dext(dst, src, 0, 32);
 }
 

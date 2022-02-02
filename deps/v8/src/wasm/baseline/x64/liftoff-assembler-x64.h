@@ -99,7 +99,6 @@ inline void Load(LiftoffAssembler* assm, LiftoffRegister dst, Operand src,
     case kOptRef:
     case kRef:
     case kRtt:
-    case kRttWithDepth:
       assm->movq(dst.gp(), src);
       break;
     case kF32:
@@ -128,7 +127,6 @@ inline void Store(LiftoffAssembler* assm, Operand dst, LiftoffRegister src,
     case kOptRef:
     case kRef:
     case kRtt:
-    case kRttWithDepth:
       assm->StoreTaggedField(dst, src.gp());
       break;
     case kF32:
@@ -875,13 +873,21 @@ void LiftoffAssembler::MoveStackValue(uint32_t dst_offset, uint32_t src_offset,
   DCHECK_NE(dst_offset, src_offset);
   Operand dst = liftoff::GetStackSlot(dst_offset);
   Operand src = liftoff::GetStackSlot(src_offset);
-  if (element_size_log2(kind) == 2) {
-    movl(kScratchRegister, src);
-    movl(dst, kScratchRegister);
-  } else {
-    DCHECK_EQ(3, element_size_log2(kind));
-    movq(kScratchRegister, src);
-    movq(dst, kScratchRegister);
+  switch (element_size_log2(kind)) {
+    case 2:
+      movl(kScratchRegister, src);
+      movl(dst, kScratchRegister);
+      break;
+    case 3:
+      movq(kScratchRegister, src);
+      movq(dst, kScratchRegister);
+      break;
+    case 4:
+      Movdqu(kScratchDoubleReg, src);
+      Movdqu(dst, kScratchDoubleReg);
+      break;
+    default:
+      UNREACHABLE();
   }
 }
 
@@ -919,7 +925,6 @@ void LiftoffAssembler::Spill(int offset, LiftoffRegister reg, ValueKind kind) {
     case kOptRef:
     case kRef:
     case kRtt:
-    case kRttWithDepth:
       movq(dst, reg.gp());
       break;
     case kF32:
@@ -1466,7 +1471,7 @@ bool LiftoffAssembler::emit_i64_popcnt(LiftoffRegister dst,
   return true;
 }
 
-void LiftoffAssembler::emit_u32_to_intptr(Register dst, Register src) {
+void LiftoffAssembler::emit_u32_to_uintptr(Register dst, Register src) {
   movl(dst, src);
 }
 
@@ -2137,7 +2142,6 @@ void LiftoffAssembler::emit_cond_jump(LiftoffCondition liftoff_cond,
       case kRef:
       case kOptRef:
       case kRtt:
-      case kRttWithDepth:
         DCHECK(liftoff_cond == kEqual || liftoff_cond == kUnequal);
         V8_FALLTHROUGH;
       case kI64:

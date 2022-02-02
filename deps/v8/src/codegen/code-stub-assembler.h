@@ -27,7 +27,7 @@
 #include "src/objects/swiss-name-dictionary.h"
 #include "src/objects/tagged-index.h"
 #include "src/roots/roots.h"
-#include "src/security/external-pointer.h"
+#include "src/sandbox/external-pointer.h"
 #include "torque-generated/exported-macros-assembler.h"
 
 namespace v8 {
@@ -616,6 +616,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   SMI_ARITHMETIC_BINOP(SmiSub, IntPtrSub, Int32Sub)
   SMI_ARITHMETIC_BINOP(SmiAnd, WordAnd, Word32And)
   SMI_ARITHMETIC_BINOP(SmiOr, WordOr, Word32Or)
+  SMI_ARITHMETIC_BINOP(SmiXor, WordXor, Word32Xor)
 #undef SMI_ARITHMETIC_BINOP
 
   TNode<IntPtrT> TryIntPtrAdd(TNode<IntPtrT> a, TNode<IntPtrT> b,
@@ -629,28 +630,44 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<Smi> TrySmiAbs(TNode<Smi> a, Label* if_overflow);
 
   TNode<Smi> SmiShl(TNode<Smi> a, int shift) {
-    return BitcastWordToTaggedSigned(
+    TNode<Smi> result = BitcastWordToTaggedSigned(
         WordShl(BitcastTaggedToWordForTagAndSmiBits(a), shift));
+    // Smi shift have different result to int32 shift when the inputs are not
+    // strictly limited. The CSA_DCHECK is to ensure valid inputs.
+    CSA_DCHECK(
+        this, TaggedEqual(result, BitwiseOp(SmiToInt32(a), Int32Constant(shift),
+                                            Operation::kShiftLeft)));
+    return result;
   }
 
   TNode<Smi> SmiShr(TNode<Smi> a, int shift) {
+    TNode<Smi> result;
     if (kTaggedSize == kInt64Size) {
-      return BitcastWordToTaggedSigned(
+      result = BitcastWordToTaggedSigned(
           WordAnd(WordShr(BitcastTaggedToWordForTagAndSmiBits(a), shift),
                   BitcastTaggedToWordForTagAndSmiBits(SmiConstant(-1))));
     } else {
       // For pointer compressed Smis, we want to make sure that we truncate to
       // int32 before shifting, to avoid the values of the top 32-bits from
       // leaking into the sign bit of the smi.
-      return BitcastWordToTaggedSigned(WordAnd(
+      result = BitcastWordToTaggedSigned(WordAnd(
           ChangeInt32ToIntPtr(Word32Shr(
               TruncateWordToInt32(BitcastTaggedToWordForTagAndSmiBits(a)),
               shift)),
           BitcastTaggedToWordForTagAndSmiBits(SmiConstant(-1))));
     }
+    // Smi shift have different result to int32 shift when the inputs are not
+    // strictly limited. The CSA_DCHECK is to ensure valid inputs.
+    CSA_DCHECK(
+        this, TaggedEqual(result, BitwiseOp(SmiToInt32(a), Int32Constant(shift),
+                                            Operation::kShiftRightLogical)));
+    return result;
   }
 
   TNode<Smi> SmiSar(TNode<Smi> a, int shift) {
+    // The number of shift bits is |shift % 64| for 64-bits value and |shift %
+    // 32| for 32-bits value. The DCHECK is to ensure valid inputs.
+    DCHECK_LT(shift, 32);
     if (kTaggedSize == kInt64Size) {
       return BitcastWordToTaggedSigned(
           WordAnd(WordSar(BitcastTaggedToWordForTagAndSmiBits(a), shift),
@@ -752,6 +769,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   TNode<Number> BitwiseOp(TNode<Word32T> left32, TNode<Word32T> right32,
                           Operation bitwise_op);
+  TNode<Number> BitwiseSmiOp(TNode<Smi> left32, TNode<Smi> right32,
+                             Operation bitwise_op);
 
   // Allocate an object of the given size.
   TNode<HeapObject> AllocateInNewSpace(
@@ -803,6 +822,8 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
     return IsCodeTMap(LoadMap(object));
   }
 
+  // TODO(v8:11880): remove once Code::bytecode_or_interpreter_data field
+  // is cached in or moved to CodeT.
   TNode<Code> FromCodeT(TNode<CodeT> code) {
 #ifdef V8_EXTERNAL_CODE_SPACE
 #if V8_TARGET_BIG_ENDIAN
@@ -1048,22 +1069,23 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   //
 
   // Load a caged pointer value from an object.
-  TNode<RawPtrT> LoadCagedPointerFromObject(TNode<HeapObject> object,
-                                            int offset) {
-    return LoadCagedPointerFromObject(object, IntPtrConstant(offset));
+  TNode<RawPtrT> LoadSandboxedPointerFromObject(TNode<HeapObject> object,
+                                                int offset) {
+    return LoadSandboxedPointerFromObject(object, IntPtrConstant(offset));
   }
 
-  TNode<RawPtrT> LoadCagedPointerFromObject(TNode<HeapObject> object,
-                                            TNode<IntPtrT> offset);
+  TNode<RawPtrT> LoadSandboxedPointerFromObject(TNode<HeapObject> object,
+                                                TNode<IntPtrT> offset);
 
   // Stored a caged pointer value to an object.
-  void StoreCagedPointerToObject(TNode<HeapObject> object, int offset,
-                                 TNode<RawPtrT> pointer) {
-    StoreCagedPointerToObject(object, IntPtrConstant(offset), pointer);
+  void StoreSandboxedPointerToObject(TNode<HeapObject> object, int offset,
+                                     TNode<RawPtrT> pointer) {
+    StoreSandboxedPointerToObject(object, IntPtrConstant(offset), pointer);
   }
 
-  void StoreCagedPointerToObject(TNode<HeapObject> object,
-                                 TNode<IntPtrT> offset, TNode<RawPtrT> pointer);
+  void StoreSandboxedPointerToObject(TNode<HeapObject> object,
+                                     TNode<IntPtrT> offset,
+                                     TNode<RawPtrT> pointer);
 
   TNode<RawPtrT> EmptyBackingStoreBufferConstant();
 
@@ -1071,8 +1093,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   // ExternalPointerT-related functionality.
   //
 
-  TNode<ExternalPointerT> ChangeUint32ToExternalPointer(TNode<Uint32T> value);
-  TNode<Uint32T> ChangeExternalPointerToUint32(TNode<ExternalPointerT> value);
+#ifdef V8_SANDBOXED_EXTERNAL_POINTERS
+  TNode<ExternalPointerT> ChangeIndexToExternalPointer(TNode<Uint32T> index);
+  TNode<Uint32T> ChangeExternalPointerToIndex(TNode<ExternalPointerT> pointer);
+#endif  // V8_SANDBOXED_EXTERNAL_POINTERS
 
   // Initialize an external pointer field in an object.
   void InitializeExternalPointerField(TNode<HeapObject> object, int offset) {
@@ -1145,14 +1169,14 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   TNode<RawPtrT> LoadJSTypedArrayExternalPointerPtr(
       TNode<JSTypedArray> holder) {
-    return LoadCagedPointerFromObject(holder,
-                                      JSTypedArray::kExternalPointerOffset);
+    return LoadSandboxedPointerFromObject(holder,
+                                          JSTypedArray::kExternalPointerOffset);
   }
 
   void StoreJSTypedArrayExternalPointerPtr(TNode<JSTypedArray> holder,
                                            TNode<RawPtrT> value) {
-    StoreCagedPointerToObject(holder, JSTypedArray::kExternalPointerOffset,
-                              value);
+    StoreSandboxedPointerToObject(holder, JSTypedArray::kExternalPointerOffset,
+                                  value);
   }
 
   // Load value from current parent frame by given offset in bytes.
@@ -2364,6 +2388,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                                           Label* if_bigint,
                                           TVariable<BigInt>* var_maybe_bigint,
                                           TVariable<Smi>* var_feedback);
+  void TaggedPointerToWord32OrBigIntWithFeedback(
+      TNode<Context> context, TNode<HeapObject> pointer, Label* if_number,
+      TVariable<Word32T>* var_word32, Label* if_bigint,
+      TVariable<BigInt>* var_maybe_bigint, TVariable<Smi>* var_feedback);
 
   TNode<Int32T> TruncateNumberToWord32(TNode<Number> value);
   // Truncate the floating point value of a HeapNumber to an Int32.
@@ -2379,6 +2407,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   TNode<Number> ChangeFloat32ToTagged(TNode<Float32T> value);
   TNode<Number> ChangeFloat64ToTagged(TNode<Float64T> value);
   TNode<Number> ChangeInt32ToTagged(TNode<Int32T> value);
+  TNode<Number> ChangeInt32ToTaggedNoOverflow(TNode<Int32T> value);
   TNode<Number> ChangeUint32ToTagged(TNode<Uint32T> value);
   TNode<Number> ChangeUintPtrToTagged(TNode<UintPtrT> value);
   TNode<Uint32T> ChangeNumberToUint32(TNode<Number> value);
@@ -2579,6 +2608,7 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   TNode<BoolT> IsSymbolInstanceType(TNode<Int32T> instance_type);
   TNode<BoolT> IsInternalizedStringInstanceType(TNode<Int32T> instance_type);
+  TNode<BoolT> IsTemporalInstantInstanceType(TNode<Int32T> instance_type);
   TNode<BoolT> IsUniqueName(TNode<HeapObject> object);
   TNode<BoolT> IsUniqueNameNoIndex(TNode<HeapObject> object);
   TNode<BoolT> IsUniqueNameNoCachedIndex(TNode<HeapObject> object);
@@ -2994,6 +3024,9 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
 
   // Calculate a valid size for the a hash table.
   TNode<IntPtrT> HashTableComputeCapacity(TNode<IntPtrT> at_least_space_for);
+
+  TNode<IntPtrT> NameToIndexHashTableLookup(TNode<NameToIndexHashTable> table,
+                                            TNode<Name> name, Label* not_found);
 
   template <class Dictionary>
   TNode<Smi> GetNumberOfElements(TNode<Dictionary> dictionary);
@@ -3620,9 +3653,16 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       TNode<JSArrayBufferView> array, TNode<JSArrayBuffer> buffer,
       Label* detached_or_out_of_bounds);
 
-  void IsJSArrayBufferViewDetachedOrOutOfBounds(TNode<JSArrayBufferView> array,
-                                                Label* detached_or_oob,
-                                                Label* not_detached_nor_oob);
+  void IsJSArrayBufferViewDetachedOrOutOfBounds(
+      TNode<JSArrayBufferView> array_buffer_view, Label* detached_or_oob,
+      Label* not_detached_nor_oob);
+
+  TNode<BoolT> IsJSArrayBufferViewDetachedOrOutOfBoundsBoolean(
+      TNode<JSArrayBufferView> array_buffer_view);
+
+  void CheckJSTypedArrayIndex(TNode<UintPtrT> index,
+                              TNode<JSTypedArray> typed_array,
+                              Label* detached_or_out_of_bounds);
 
   TNode<IntPtrT> RabGsabElementsKindToElementByteSize(
       TNode<Int32T> elementsKind);
@@ -3660,10 +3700,10 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
   // Promise helpers
   TNode<Uint32T> PromiseHookFlags();
   TNode<BoolT> HasAsyncEventDelegate();
+#ifdef V8_ENABLE_JAVASCRIPT_PROMISE_HOOKS
   TNode<BoolT> IsContextPromiseHookEnabled(TNode<Uint32T> flags);
-  TNode<BoolT> IsContextPromiseHookEnabled() {
-    return IsContextPromiseHookEnabled(PromiseHookFlags());
-  }
+#endif
+  TNode<BoolT> IsIsolatePromiseHookEnabled(TNode<Uint32T> flags);
   TNode<BoolT> IsAnyPromiseHookEnabled(TNode<Uint32T> flags);
   TNode<BoolT> IsAnyPromiseHookEnabled() {
     return IsAnyPromiseHookEnabled(PromiseHookFlags());
@@ -3708,17 +3748,11 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
       FrameArgumentsArgcType argc_type =
           FrameArgumentsArgcType::kCountExcludesReceiver);
 
-  inline TNode<Int32T> JSParameterCount(TNode<Int32T> argc_without_receiver) {
-    return kJSArgcIncludesReceiver
-               ? Int32Add(argc_without_receiver,
-                          Int32Constant(kJSArgcReceiverSlots))
-               : argc_without_receiver;
+  inline TNode<Int32T> JSParameterCount(int argc_without_receiver) {
+    return Int32Constant(argc_without_receiver + kJSArgcReceiverSlots);
   }
   inline TNode<Word32T> JSParameterCount(TNode<Word32T> argc_without_receiver) {
-    return kJSArgcIncludesReceiver
-               ? Int32Add(argc_without_receiver,
-                          Int32Constant(kJSArgcReceiverSlots))
-               : argc_without_receiver;
+    return Int32Add(argc_without_receiver, Int32Constant(kJSArgcReceiverSlots));
   }
 
   // Support for printf-style debugging
@@ -4060,10 +4094,12 @@ class V8_EXPORT_PRIVATE CodeStubAssembler
                        TVariable<Numeric>* var_numeric,
                        TVariable<Smi>* var_feedback);
 
+  enum IsKnownTaggedPointer { kNo, kYes };
   template <Object::Conversion conversion>
   void TaggedToWord32OrBigIntImpl(TNode<Context> context, TNode<Object> value,
                                   Label* if_number,
                                   TVariable<Word32T>* var_word32,
+                                  IsKnownTaggedPointer is_known_tagged_pointer,
                                   Label* if_bigint = nullptr,
                                   TVariable<BigInt>* var_maybe_bigint = nullptr,
                                   TVariable<Smi>* var_feedback = nullptr);

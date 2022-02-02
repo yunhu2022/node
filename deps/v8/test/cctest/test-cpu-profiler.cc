@@ -4205,7 +4205,7 @@ int GetSourcePositionEntryCount(i::Isolate* isolate, const char* source,
   i::Handle<i::JSFunction> function = i::Handle<i::JSFunction>::cast(
       v8::Utils::OpenHandle(*CompileRun(source)));
   if (function->ActiveTierIsIgnition()) return -1;
-  i::Handle<i::Code> code(function->code(), isolate);
+  i::Handle<i::Code> code(i::FromCodeT(function->code()), isolate);
   i::SourcePositionTableIterator iterator(
       ByteArray::cast(code->source_position_table()));
 
@@ -4332,7 +4332,7 @@ struct FastApiReceiver {
     // TODO(mslekova): The fallback is not used by the test. Replace this
     // with a CHECK.
     if (!IsValidUnwrapObject(*receiver)) {
-      options.fallback = 1;
+      options.fallback = true;
       return;
     }
     FastApiReceiver* receiver_ptr =
@@ -4383,7 +4383,6 @@ TEST(FastApiCPUProfiler) {
 #if !defined(V8_LITE_MODE) && !defined(USE_SIMULATOR)
   // None of the following configurations include JSCallReducer.
   if (i::FLAG_jitless) return;
-  if (i::FLAG_turboprop) return;
 
   FLAG_SCOPE(opt);
   FLAG_SCOPE(turbo_fast_api_calls);

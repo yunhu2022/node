@@ -216,7 +216,7 @@ class V8_EXPORT_PRIVATE PagedSpace
 
   void RefineAllocatedBytesAfterSweeping(Page* page);
 
-  Page* InitializePage(MemoryChunk* chunk);
+  Page* InitializePage(MemoryChunk* chunk) override;
 
   void ReleasePage(Page* page);
 
@@ -289,9 +289,11 @@ class V8_EXPORT_PRIVATE PagedSpace
   inline void UnlinkFreeListCategories(Page* page);
   inline size_t RelinkFreeListCategories(Page* page);
 
-  Page* first_page() { return reinterpret_cast<Page*>(Space::first_page()); }
-  const Page* first_page() const {
-    return reinterpret_cast<const Page*>(Space::first_page());
+  Page* first_page() override {
+    return reinterpret_cast<Page*>(memory_chunk_list_.front());
+  }
+  const Page* first_page() const override {
+    return reinterpret_cast<const Page*>(memory_chunk_list_.front());
   }
 
   iterator begin() { return iterator(first_page()); }
@@ -485,6 +487,8 @@ class CompactionSpaceCollection : public Malloced {
                                      CompactionSpaceKind compaction_space_kind)
       : old_space_(heap, OLD_SPACE, Executability::NOT_EXECUTABLE,
                    compaction_space_kind),
+        map_space_(heap, MAP_SPACE, Executability::NOT_EXECUTABLE,
+                   compaction_space_kind),
         code_space_(heap, CODE_SPACE, Executability::EXECUTABLE,
                     compaction_space_kind) {}
 
@@ -492,6 +496,8 @@ class CompactionSpaceCollection : public Malloced {
     switch (space) {
       case OLD_SPACE:
         return &old_space_;
+      case MAP_SPACE:
+        return &map_space_;
       case CODE_SPACE:
         return &code_space_;
       default:
@@ -502,6 +508,7 @@ class CompactionSpaceCollection : public Malloced {
 
  private:
   CompactionSpace old_space_;
+  CompactionSpace map_space_;
   CompactionSpace code_space_;
 };
 

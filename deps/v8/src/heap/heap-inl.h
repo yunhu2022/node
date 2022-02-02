@@ -191,6 +191,10 @@ inline const base::AddressRegion& Heap::code_region() {
 #endif
 }
 
+Address Heap::code_range_base() {
+  return code_range_ ? code_range_->base() : kNullAddress;
+}
+
 int Heap::MaxRegularHeapObjectSize(AllocationType allocation) {
   if (!V8_ENABLE_THIRD_PARTY_HEAP_BOOL &&
       (allocation == AllocationType::kCode)) {
@@ -331,7 +335,6 @@ HeapObject Heap::AllocateRawWith(int size, AllocationType allocation,
       DCHECK(IsAligned(size, kTaggedSize));
       HeapObject obj = HeapObject::FromAddress(*top);
       *top += size;
-      heap->CreateFillerObjectAt(obj.address(), size, ClearRecordedSlots::kNo);
       MSAN_ALLOCATED_UNINITIALIZED_MEMORY(obj.address(), size);
       return obj;
     }

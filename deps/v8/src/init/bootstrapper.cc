@@ -52,6 +52,7 @@
 #endif  // V8_INTL_SUPPORT
 #include "src/objects/js-regexp-string-iterator.h"
 #include "src/objects/js-regexp.h"
+#include "src/objects/js-shadow-realms.h"
 #ifdef V8_INTL_SUPPORT
 #include "src/objects/js-relative-time-format.h"
 #include "src/objects/js-segment-iterator.h"
@@ -1901,12 +1902,14 @@ void Genesis::InitializeGlobal(Handle<JSGlobalObject> global_object,
                               Builtin::kNumberParseFloat, 1, true);
     JSObject::AddProperty(isolate_, global_object, "parseFloat",
                           parse_float_fun, DONT_ENUM);
+    native_context()->set_global_parse_float_fun(*parse_float_fun);
 
     // Install Number.parseInt and Global.parseInt.
     Handle<JSFunction> parse_int_fun = SimpleInstallFunction(
         isolate_, number_fun, "parseInt", Builtin::kNumberParseInt, 2, true);
     JSObject::AddProperty(isolate_, global_object, "parseInt", parse_int_fun,
                           DONT_ENUM);
+    native_context()->set_global_parse_int_fun(*parse_int_fun);
 
     // Install Number constants
     const double kMaxValue = 1.7976931348623157e+308;
@@ -4401,9 +4404,34 @@ EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_error_cause)
 
 #ifdef V8_INTL_SUPPORT
 EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_intl_best_fit_matcher)
+EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE(harmony_intl_number_format_v3)
 #endif  // V8_INTL_SUPPORT
 
 #undef EMPTY_INITIALIZE_GLOBAL_FOR_FEATURE
+
+void Genesis::InitializeGlobal_harmony_shadow_realm() {
+  if (!FLAG_harmony_shadow_realm) return;
+  // -- S h a d o w R e a l m
+  // #sec-shadowrealm-objects
+  Handle<JSGlobalObject> global(native_context()->global_object(), isolate());
+  Handle<JSFunction> shadow_realm_fun = InstallFunction(
+      isolate_, global, "ShadowRealm", JS_SHADOW_REALM_TYPE,
+      JSShadowRealm::kHeaderSize, 0, factory()->the_hole_value(),
+      Builtin::kShadowRealmConstructor);
+  shadow_realm_fun->shared().set_length(0);
+  shadow_realm_fun->shared().DontAdaptArguments();
+
+  // Setup %ShadowRealmPrototype%.
+  Handle<JSObject> prototype(
+      JSObject::cast(shadow_realm_fun->instance_prototype()), isolate());
+
+  InstallToStringTag(isolate_, prototype, factory()->ShadowRealm_string());
+
+  SimpleInstallFunction(isolate_, prototype, "evaluate",
+                        Builtin::kShadowRealmPrototypeEvaluate, 1, true);
+  SimpleInstallFunction(isolate_, prototype, "importValue",
+                        Builtin::kShadowRealmPrototypeImportValue, 2, true);
+}
 
 void Genesis::InitializeGlobal_harmony_array_find_last() {
   if (!FLAG_harmony_array_find_last) return;
@@ -4436,6 +4464,28 @@ void Genesis::InitializeGlobal_harmony_array_find_last() {
     SimpleInstallFunction(isolate_, prototype, "findLastIndex",
                           Builtin::kTypedArrayPrototypeFindLastIndex, 1, false);
   }
+}
+
+void Genesis::InitializeGlobal_harmony_array_grouping() {
+  if (!FLAG_harmony_array_grouping) return;
+
+  Handle<JSFunction> array_function(native_context()->array_function(),
+                                    isolate());
+  Handle<JSObject> array_prototype(
+      JSObject::cast(array_function->instance_prototype()), isolate());
+
+  SimpleInstallFunction(isolate_, array_prototype, "groupBy",
+                        Builtin::kArrayPrototypeGroupBy, 1, false);
+  SimpleInstallFunction(isolate_, array_prototype, "groupByToMap",
+                        Builtin::kArrayPrototypeGroupByToMap, 1, false);
+
+  Handle<JSObject> unscopables = Handle<JSObject>::cast(
+      JSObject::GetProperty(isolate(), array_prototype,
+                            isolate()->factory()->unscopables_symbol())
+          .ToHandleChecked());
+
+  InstallTrueValuedProperty(isolate_, unscopables, "groupBy");
+  InstallTrueValuedProperty(isolate_, unscopables, "groupByToMap");
 }
 
 void Genesis::InitializeGlobal_harmony_object_has_own() {
@@ -4585,6 +4635,7 @@ void Genesis::InitializeGlobal_harmony_temporal() {
     Handle<JSObject> now = factory()->NewJSObject(isolate_->object_function(),
                                                   AllocationType::kOld);
     JSObject::AddProperty(isolate_, temporal, "Now", now, DONT_ENUM);
+    InstallToStringTag(isolate_, now, "Temporal.Now");
 
     // Note: There are NO Temporal.Now.plainTime
     // See https://github.com/tc39/proposal-temporal/issues/1540
@@ -5193,6 +5244,17 @@ void Genesis::InitializeGlobal_harmony_temporal() {
   }
 #undef INSTALL_TEMPORAL_CTOR_AND_PROTOTYPE
 #undef INSTALL_TEMPORAL_FUNC
+
+  // The TemporalInsantFixedArrayFromIterable functions is created but not
+  // exposed, as it is used internally by GetPossibleInstantsFor.
+  {
+    Handle<JSFunction> func = SimpleCreateFunction(
+        isolate_,
+        factory()->InternalizeUtf8String(
+            "TemporalInstantFixedArrayFromIterable"),
+        Builtin::kTemporalInstantFixedArrayFromIterable, 1, false);
+    native_context()->set_temporal_instant_fixed_array_from_iterable(*func);
+  }
 }
 
 #ifdef V8_INTL_SUPPORT
@@ -5657,9 +5719,9 @@ void Genesis::InitializeMapCaches() {
     DisallowGarbageCollection no_gc;
     native_context()->set_map_cache(*cache);
     Map initial = native_context()->object_function().initial_map();
-    cache->Set(0, HeapObjectReference::Weak(initial), SKIP_WRITE_BARRIER);
+    cache->Set(0, HeapObjectReference::Weak(initial));
     cache->Set(initial.GetInObjectProperties(),
-               HeapObjectReference::Weak(initial), SKIP_WRITE_BARRIER);
+               HeapObjectReference::Weak(initial));
   }
 }
 
@@ -6158,14 +6220,6 @@ Genesis::Genesis(
       PrintF("[Initializing context from scratch took %0.3f ms]\n", ms);
     }
   }
-
-  // TODO(v8:10391): The reason is that the NativeContext::microtask_queue
-  // serialization is not actually supported, and therefore the field is
-  // serialized as raw data instead of being serialized as ExternalReference.
-  // As a result, when V8 heap sandbox is enabled, the external pointer entry
-  // is not allocated for microtask queue field during deserialization, so we
-  // allocate it manually here.
-  native_context()->AllocateExternalPointerEntries(isolate);
 
   native_context()->set_microtask_queue(
       isolate, microtask_queue ? static_cast<MicrotaskQueue*>(microtask_queue)
